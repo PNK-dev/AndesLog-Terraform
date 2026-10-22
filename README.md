@@ -37,6 +37,34 @@ scripts/                     cloud-init, WireGuard, SQL y carga de backups
 README.md
 ```
 
+## Versiones del proyecto
+
+Terraform y ERP son dos repositorios independientes. Publica cada cambio estable con un tag Git `vMAJOR.MINOR.PATCH` en su repositorio; conserva los tags publicados sin moverlos. Al desplegar, usa un tag de Terraform y un tag del ERP conocidos y registra esa pareja en el mensaje del tag anotado de Terraform. La rama `main` sirve para desarrollo y puede cambiar entre equipos.
+
+`lab.ps1` construye el ERP desde la carpeta hermana y etiqueta la imagen Docker localmente. El valor de `-ErpImage` debe corresponder al tag Git que hayas seleccionado en el ERP; no hace falta publicar la imagen en GHCR para este flujo. El valor predeterminado actual es `ghcr.io/pnk-dev/andeslog-erp:v1.0.0`, así que pásalo explícitamente cuando uses otra versión.
+
+Para preparar una versión, termina y publica los commits de ambos repositorios, crea los tags en cada uno y súbelos. Por ejemplo, desde la carpeta que contiene ambos repositorios:
+
+```powershell
+git -C .\AndesLog-ERP tag -a v1.0.1 -m "AndesLog ERP v1.0.1"
+git -C .\AndesLog-ERP push origin v1.0.1
+git -C .\AndesLog-Terraform tag -a v1.0.1 -m "AndesLog Terraform v1.0.1; ERP v1.0.1"
+git -C .\AndesLog-Terraform push origin v1.0.1
+```
+
+Los números de versión de los dos repositorios pueden ser distintos; registra siempre la pareja exacta. Estos comandos son un ejemplo para una versión futura: crea un tag solo cuando el commit correspondiente esté listo. Para reproducir una versión publicada en otro equipo, clona ambos repositorios como hermanos y selecciona los tags documentados:
+
+```powershell
+git -C .\AndesLog-Terraform fetch --tags
+git -C .\AndesLog-ERP fetch --tags
+git -C .\AndesLog-Terraform switch --detach <TAG_TERRAFORM>
+git -C .\AndesLog-ERP switch --detach <TAG_ERP>
+Set-Location .\AndesLog-Terraform
+.\scripts\lab.ps1 -Action Deploy -ErpImage "ghcr.io/pnk-dev/andeslog-erp:<TAG_ERP>"
+```
+
+Las credenciales temporales, `terraform.tfvars`, la clave SSH y `andeslog.runtime.secret` son datos locales y no forman parte de una versión Git. La infraestructura existente se identifica por los workspaces HCP, así que verifica que la organización, cuenta AWS y suscripción Azure sean las esperadas antes de usar otro equipo.
+
 ## Ciclo reproducible con un comando
 
 `scripts/lab.ps1` encadena los dos estados Terraform y la instalación del ERP. Genera `99-runtime.auto.tfvars.json` en cada root para los valores descubiertos durante la ejecución: IP pública administrativa, IP de cada VPN, clave **pública** WireGuard, suscripción, clave SSH pública e indicador del NAT temporal. Terraform lee esos archivos automáticamente después de `terraform.tfvars`. Los overlays están excluidos de Git; las claves privadas y contraseñas nunca entran en Terraform. No edites los archivos `.tf` entre ciclos.
@@ -104,7 +132,7 @@ AWS y Azure tienen estados remotos separados en `andeslog-lab-aws` y `andeslog-l
 
 ## Clonar este proyecto en otro equipo
 
-Actualmente Terraform y ERP son carpetas separadas. Si publicas solo Terraform, el clon no tendrá el código necesario para construir la imagen ERP: publica también `ERP-APP` como segundo repositorio, o incorpora su código en `ERP-APP/` dentro de un único repositorio antes del commit. Necesitas acceso a la misma organización HCP Terraform. Clonar una carpeta no clona sus credenciales ni el estado remoto.
+Terraform y ERP se publican como repositorios separados. Clónalos como carpetas hermanas para que el script encuentre el Dockerfile del ERP. Necesitas acceso a la misma organización HCP Terraform. Clonar los repositorios no clona sus credenciales ni el estado remoto.
 
 ```powershell
 git clone <URL_REPOSITORIO_TERRAFORM> AndesLog-Terraform
@@ -139,18 +167,17 @@ Pop-Location
 
 Los archivos `terraform.tfvars` se crean desde los ejemplos para cada clon y permanecen locales. `.gitignore` evita que se versionen y `.terraformignore` los excluye de la carga de configuración a HCP. Los archivos `.terraform.lock.hcl` sí se versionan para fijar las versiones de providers.
 
-Este checkout de Terraform ya tiene `.git` en la rama `main`, todavía sin commits. Para publicarlo cuando tengas la URL del remoto:
+Para publicar cambios posteriores, revisa los archivos preparados antes del commit y sube la rama correspondiente:
 
 ```powershell
-git add .
+git add -A
 git status --short
 git diff --cached --name-only
-git commit -m "Initial AndesLog Terraform"
-git remote add origin <URL_REPOSITORIO_TERRAFORM>
-git push -u origin main
+git commit -m "Describe el cambio"
+git push
 ```
 
-Confirma que `terraform.tfvars`, archivos `*.tfstate*`, planes, `.terraform/`, llaves y credenciales no aparezcan en `git status` ni en el listado preparado. Revisa los archivos antes del primer commit; `.gitignore` los excluye, pero no elimina archivos que ya estuvieran versionados.
+Confirma que `terraform.tfvars`, archivos `*.tfstate*`, planes, `.terraform/`, llaves y credenciales no aparezcan en `git status` ni en el listado preparado. Revisa los archivos antes de cada commit; `.gitignore` los excluye, pero no elimina archivos que ya estuvieran versionados.
 
 Si en este checkout Git muestra `detected dubious ownership` por el propietario con que se creó `.git`, y reconoces esta carpeta como propia, registra **solo esta ruta** como segura antes de los comandos anteriores:
 
