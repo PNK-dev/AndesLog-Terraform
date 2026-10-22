@@ -1,0 +1,79 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/andeslog-db-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::Retries "3";' >> /etc/apt/apt.conf.d/99force-ipv4
+apt-get -o Acquire::ForceIPv4=true update -y
+apt-get -o Acquire::ForceIPv4=true install -y postgresql rsync
+
+# Terraform attaches the data volume after the EC2 instance starts.
+DEVICE=""
+for attempt in $(seq 1 120); do
+  for candidate in /dev/nvme1n1 /dev/xvdf /dev/sdf; do
+    if [ -b "$candidate" ]; then DEVICE="$candidate"; break; fi
+  done
+  [ -n "$DEVICE" ] && break
+  sleep 5
+done
+if [ -z "$DEVICE" ]; then
+  echo "Attached PostgreSQL EBS data volume was not found." >&2
+  exit 1
+fi
+
+systemctl stop postgresql
+FS_TYPE="$(blkid -o value -s TYPE "$DEVICE" || true)"
+if [ -z "$FS_TYPE" ]; then
+  # A brand-new Terraform EBS volume is empty. Never format a recognized disk.
+  mkfs.ext4 "$DEVICE"
+elif [ "$FS_TYPE" != "ext4" ]; then
+  echo "Refusing to use unexpected EBS filesystem: $FS_TYPE" >&2
+  exit 1
+fi
+
+PG_VERSION="16"
+PG_DATA="/mnt/andeslog-pgdata"
+install -d -o root -g root -m 0755 "$PG_DATA"
+mount "$DEVICE" "$PG_DATA"
+
+if [ -f "$PG_DATA/$PG_VERSION/main/PG_VERSION" ]; then
+  EXISTING_PG_VERSION="$(cat "$PG_DATA/$PG_VERSION/main/PG_VERSION")"
+  if [ "$EXISTING_PG_VERSION" != "$PG_VERSION" ]; then
+    echo "EBS contains PostgreSQL $EXISTING_PG_VERSION; this image expects $PG_VERSION. Refusing to replace data." >&2
+    umount "$PG_DATA"
+    exit 1
+  fi
+elif find "$PG_DATA" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit | grep -q .; then
+  echo "EBS is formatted but contains no expected PostgreSQL cluster; refusing to copy over existing files." >&2
+  umount "$PG_DATA"
+  exit 1
+else
+  # Only initialize a truly empty volume; preserve the package-created cluster.
+  rsync -aHAX /var/lib/postgresql/ "$PG_DATA/"
+fi
+
+DATA_UUID="$(blkid -s UUID -o value "$DEVICE")"
+umount "$PG_DATA"
+mv /var/lib/postgresql "/var/lib/postgresql.root.$(date +%s)"
+install -d -o postgres -g postgres -m 0700 /var/lib/postgresql
+if ! grep -q "^UUID=$DATA_UUID[[:space:]]" /etc/fstab; then
+  printf 'UUID=%s /var/lib/postgresql ext4 defaults,nofail 0 2\n' "$DATA_UUID" >> /etc/fstab
+fi
+mount /var/lib/postgresql
+chown postgres:postgres /var/lib/postgresql
+
+PG_CONF="/etc/postgresql/$PG_VERSION/main/postgresql.conf"
+PG_HBA="/etc/postgresql/$PG_VERSION/main/pg_hba.conf"
+sed -i "s/^#listen_addresses =.*/listen_addresses = '${db_private_ip}'/" "$PG_CONF"
+sed -i "s/^#password_encryption =.*/password_encryption = 'scram-sha-256'/" "$PG_CONF"
+cat > "$PG_HBA" <<'HBA'
+local   all             postgres                                peer
+local   all             all                                     scram-sha-256
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             10.10.11.0/24           scram-sha-256
+host    all             all             10.10.12.0/24           scram-sha-256
+HBA
+systemctl enable postgresql
+systemctl start postgresql
+echo "PostgreSQL is installed. Create the application role/database and set its password interactively after deployment." > /var/log/andeslog-db-setup.txt

@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1180" viewBox="0 0 2048 1180" role="img" aria-labelledby="title desc">
+  <title id="title">AndesLog: infraestructura multicloud desplegada</title>
+  <desc id="desc">Flujo HTTP desde el navegador al balanceador AWS, dos servidores ERP Docker y PostgreSQL. VPN WireGuard hacia Azure, con almacenamiento Blob para respaldos manuales y estados remotos en HCP Terraform.</desc>
+  <defs>
+    <style>
+      text { font-family: "Segoe UI", Arial, sans-serif; fill: #17324d; }
+      .title { font-size: 44px; font-weight: 750; }
+      .subtitle { font-size: 20px; fill: #52708b; }
+      .cloud-title { font-size: 34px; font-weight: 750; }
+      .cloud-subtitle { font-size: 19px; fill: #5a7185; }
+      .zone-title { font-size: 19px; font-weight: 700; letter-spacing: .7px; fill: #51667a; }
+      .card-title { font-size: 23px; font-weight: 700; }
+      .card-text { font-size: 18px; fill: #476078; }
+      .small { font-size: 16px; fill: #51677b; }
+      .pill { font-size: 16px; font-weight: 700; }
+      .panel { stroke-width: 2.5; }
+      .zone { fill: #ffffff; stroke: #d6e2ed; stroke-width: 1.5; }
+      .card { fill: #ffffff; stroke: #aac4da; stroke-width: 2; }
+      .flow { fill: none; stroke: #28617f; stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; marker-end: url(#arrow); }
+      .vpn-flow { fill: none; stroke: #168b8b; stroke-width: 4.5; stroke-linecap: round; marker-start: url(#arrow-teal); marker-end: url(#arrow-teal); }
+      .control-flow { fill: none; stroke: #95a8b9; stroke-width: 2.5; stroke-dasharray: 8 7; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#28617f"/></marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#168b8b"/></marker>
+  </defs>
+
+  <rect width="2048" height="1180" fill="#f5f8fc"/>
+  <text x="50" y="70" class="title">AndesLog · arquitectura desplegada</text>
+  <text x="52" y="108" class="subtitle">Estado verificado el 15 de octubre de 2026 · laboratorio académico AWS + Azure</text>
+
+  <rect x="280" y="160" width="1180" height="800" rx="26" fill="#fff8ee" stroke="#e8a850" class="panel"/>
+  <rect x="1500" y="160" width="500" height="800" rx="26" fill="#eff8ff" stroke="#5ca7df" class="panel"/>
+  <text x="315" y="210" class="cloud-title" fill="#a65408">AWS · us-east-1</text>
+  <text x="315" y="244" class="cloud-subtitle">VPC 10.10.0.0/16 · cuenta AWS Academy</text>
+  <text x="1525" y="210" class="cloud-title" fill="#0967b1">Azure · chilecentral</text>
+  <text x="1525" y="244" class="cloud-subtitle">RG andeslog-lab-rg · VNet 10.20.0.0/16</text>
+
+  <rect x="305" y="270" width="1130" height="175" rx="18" class="zone"/>
+  <rect x="305" y="470" width="1130" height="200" rx="18" class="zone"/>
+  <rect x="305" y="700" width="1130" height="165" rx="18" class="zone"/>
+  <rect x="305" y="885" width="1130" height="55" rx="15" fill="#fff0d7" stroke="#e8c790" stroke-width="1.5"/>
+  <text x="330" y="298" class="zone-title">RED PÚBLICA · public-a 10.10.1.0/24 + public-b 10.10.2.0/24</text>
+  <text x="330" y="498" class="zone-title">APLICACIÓN PRIVADA · dos zonas de disponibilidad</text>
+  <text x="330" y="728" class="zone-title">DATOS PRIVADOS · sin acceso público</text>
+
+  <rect x="1525" y="270" width="450" height="175" rx="18" class="zone"/>
+  <rect x="1525" y="470" width="450" height="200" rx="18" class="zone"/>
+  <rect x="1525" y="700" width="450" height="165" rx="18" class="zone"/>
+  <rect x="1525" y="885" width="450" height="55" rx="15" fill="#dff2ff" stroke="#b6d8ef" stroke-width="1.5"/>
+  <text x="1545" y="298" class="zone-title">snet-vpn · 10.20.1.0/24 · NSG</text>
+  <text x="1545" y="498" class="zone-title">snet-private · 10.20.11.0/24</text>
+  <text x="1545" y="728" class="zone-title">ALMACENAMIENTO DE RESPALDOS</text>
+
+  <path d="M 258 374 H 335" class="flow"/>
+  <path d="M 485 420 V 454 H 316 V 515 H 582 V 535" class="flow"/>
+  <path d="M 316 515 H 1158 V 535" class="flow"/>
+  <path d="M 582 640 V 680 H 785 V 750" class="flow"/>
+  <path d="M 1158 640 V 680 H 915 V 750" class="flow"/>
+  <path d="M 1050 798 H 1090" class="flow"/>
+  <path d="M 1400 373 H 1545" class="vpn-flow"/>
+  <path d="M 1915 420 V 535" class="flow"/>
+  <path d="M 865 960 V 995 M 1750 960 V 995" class="control-flow"/>
+
+  <rect x="28" y="326" width="230" height="100" rx="17" fill="#e6f4f2" stroke="#68b6aa" stroke-width="2"/>
+  <text x="49" y="365" class="card-title">Usuario</text>
+  <text x="49" y="397" class="card-text">Navegador · HTTP :80</text>
+
+  <rect x="335" y="325" width="300" height="95" rx="15" class="card"/>
+  <text x="356" y="358" class="card-title">Balanceador ALB</text>
+  <text x="356" y="387" class="card-text">Público · HTTP :80</text>
+  <text x="356" y="411" class="small">Sondeo /api/health</text>
+
+  <rect x="670" y="335" width="355" height="85" rx="15" fill="#fafcff" stroke="#b9cad8" stroke-width="2"/>
+  <text x="690" y="368" class="card-title">Internet Gateway</text>
+  <text x="690" y="399" class="card-text">Rutas y grupos de seguridad</text>
+
+  <rect x="1070" y="325" width="330" height="95" rx="15" class="card"/>
+  <text x="1091" y="357" class="card-title">EC2 VPN · WireGuard</text>
+  <text x="1091" y="386" class="card-text">10.10.1.10 · t3.micro</text>
+  <text x="1091" y="411" class="small">Pública: 44.201.73.48</text>
+
+  <rect x="1545" y="325" width="410" height="95" rx="15" class="card"/>
+  <text x="1565" y="356" class="card-title">VM VPN · WireGuard</text>
+  <text x="1565" y="385" class="card-text">10.20.1.10 · Standard_B2als_v2</text>
+  <text x="1565" y="411" class="small">Pública estática: 68.211.144.137</text>
+  <rect x="1407" y="324" width="115" height="32" rx="11" fill="#def4f1" stroke="#84c9c2"/>
+  <text x="1420" y="345" class="pill" fill="#147573">UDP 51820</text>
+
+  <rect x="681" y="505" width="120" height="27" rx="10" fill="#e6f1fa"/>
+  <text x="694" y="524" class="pill" fill="#28617f">HTTP :8080</text>
+  <rect x="350" y="535" width="465" height="105" rx="15" class="card"/>
+  <text x="372" y="570" class="card-title">web-a · Docker ERP</text>
+  <text x="372" y="602" class="card-text">EC2 t3.micro · 10.10.11.10</text>
+  <text x="372" y="628" class="small">Subred app-a · AZ A</text>
+  <rect x="925" y="535" width="465" height="105" rx="15" class="card"/>
+  <text x="947" y="570" class="card-title">web-b · Docker ERP</text>
+  <text x="947" y="602" class="card-text">EC2 t3.micro · 10.10.12.10</text>
+  <text x="947" y="628" class="small">Subred app-b · AZ B</text>
+
+  <rect x="1550" y="535" width="400" height="105" rx="15" class="card"/>
+  <text x="1571" y="570" class="card-title">Rutas privadas</text>
+  <text x="1571" y="602" class="card-text">Hacia app-a y app-b en AWS</text>
+  <text x="1571" y="628" class="small">Subred reservada · sin VM</text>
+
+  <rect x="340" y="765" width="270" height="70" rx="14" fill="#f8fbfe" stroke="#c8d8e5" stroke-width="1.5"/>
+  <text x="359" y="794" class="card-text">data-b · 10.10.22.0/24</text>
+  <text x="359" y="820" class="small">Reservada · sin servidor</text>
+  <rect x="650" y="750" width="400" height="95" rx="15" class="card"/>
+  <text x="672" y="780" class="card-title">PostgreSQL</text>
+  <text x="672" y="809" class="card-text">EC2 t3.micro · 10.10.21.10:5432</text>
+  <text x="672" y="834" class="small">Base andeslog · data-a</text>
+  <rect x="1090" y="765" width="300" height="70" rx="14" fill="#f7f2ff" stroke="#bda4dc" stroke-width="1.7"/>
+  <text x="1111" y="794" class="card-title">Volumen EBS</text>
+  <text x="1111" y="820" class="small">gp3 cifrado · 20 GiB</text>
+
+  <rect x="1545" y="750" width="410" height="95" rx="15" class="card"/>
+  <text x="1566" y="780" class="card-title">Azure Blob Storage</text>
+  <text x="1566" y="808" class="card-text">StorageV2 · Standard LRS</text>
+  <text x="1566" y="833" class="small">Contenedor backups privado · carga manual</text>
+
+  <text x="330" y="920" class="card-text">CloudWatch · dashboard + 4 alarmas CPU + 1 alarma ALB</text>
+  <text x="1545" y="920" class="card-text">Azure Monitor · alarma CPU de VM</text>
+
+  <rect x="28" y="505" width="230" height="190" rx="17" fill="#ffffff" stroke="#bfd1df" stroke-width="2"/>
+  <text x="49" y="544" class="card-title">Operación</text>
+  <text x="49" y="579" class="card-text">SSH restringido</text>
+  <text x="49" y="607" class="small">a las VPN</text>
+  <text x="49" y="644" class="card-text">pg_dump + subida</text>
+  <text x="49" y="671" class="small">manual a Azure Blob</text>
+
+  <rect x="280" y="995" width="1720" height="105" rx="22" fill="#e9eef5" stroke="#b7c6d4" stroke-width="2"/>
+  <text x="310" y="1032" class="card-title">HCP Terraform</text>
+  <text x="310" y="1065" class="card-text">Org AndesLog</text>
+  <rect x="555" y="1022" width="380" height="51" rx="13" fill="#ffffff" stroke="#b8c5d2"/>
+  <text x="581" y="1055" class="card-text">andeslog-lab-aws</text>
+  <rect x="965" y="1022" width="405" height="51" rx="13" fill="#ffffff" stroke="#b8c5d2"/>
+  <text x="992" y="1055" class="card-text">andeslog-lab-azure</text>
+  <text x="1430" y="1055" class="card-text">Estado remoto · ejecución local</text>
+
+  <text x="50" y="1142" class="subtitle">Actual: sin NAT Gateway ni bucket S3 · backups manuales · acceso web HTTP sin TLS</text>
+</svg>

@@ -1,0 +1,50 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/andeslog-vpn-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+apt-get -o Acquire::ForceIPv4=true update -y
+apt-get -o Acquire::ForceIPv4=true install -y wireguard iptables
+
+cat > /etc/sysctl.d/99-andeslog-forwarding.conf <<'SYSCTL'
+net.ipv4.ip_forward=1
+SYSCTL
+sysctl --system
+
+install -d -o root -g root -m 0700 /etc/wireguard
+install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/.ssh
+touch /home/ubuntu/.ssh/authorized_keys
+grep -Fqx '${ssh_public_key}' /home/ubuntu/.ssh/authorized_keys || printf '%s\n' '${ssh_public_key}' >> /home/ubuntu/.ssh/authorized_keys
+chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
+chmod 0600 /home/ubuntu/.ssh/authorized_keys
+umask 077
+wg genkey > /etc/wireguard/privatekey
+LOCAL_PRIVATE_KEY="$(cat /etc/wireguard/privatekey)"
+
+cat > /etc/wireguard/wg0.conf <<CONFIG
+[Interface]
+Address = 172.30.50.1/30
+ListenPort = 51820
+PrivateKey = $${LOCAL_PRIVATE_KEY}
+PostUp = iptables -C FORWARD -s 10.10.11.0/24 -d 10.20.0.0/16 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.10.11.0/24 -d 10.20.0.0/16 -j ACCEPT
+PostUp = iptables -C FORWARD -s 10.10.12.0/24 -d 10.20.0.0/16 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.10.12.0/24 -d 10.20.0.0/16 -j ACCEPT
+PostUp = iptables -C FORWARD -s 10.20.0.0/16 -d 10.10.11.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.20.0.0/16 -d 10.10.11.0/24 -j ACCEPT
+PostUp = iptables -C FORWARD -s 10.20.0.0/16 -d 10.10.12.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.20.0.0/16 -d 10.10.12.0/24 -j ACCEPT
+PostDown = iptables -D FORWARD -s 10.10.11.0/24 -d 10.20.0.0/16 -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -s 10.10.12.0/24 -d 10.20.0.0/16 -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -s 10.20.0.0/16 -d 10.10.11.0/24 -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -s 10.20.0.0/16 -d 10.10.12.0/24 -j ACCEPT 2>/dev/null || true
+
+[Peer]
+PublicKey = ${azure_public_key}
+Endpoint = ${azure_public_ip}:51820
+AllowedIPs = 172.30.50.2/32,10.20.0.0/16
+PersistentKeepalive = 25
+CONFIG
+chmod 0600 /etc/wireguard/privatekey /etc/wireguard/wg0.conf
+
+systemctl enable --now wg-quick@wg0
+LOCAL_PUBLIC_KEY="$(wg pubkey < /etc/wireguard/privatekey)"
+echo "ANDESLOG_WIREGUARD_PUBLIC_KEY=$${LOCAL_PUBLIC_KEY}" | tee -a /var/log/andeslog-vpn-setup.txt
+wg show wg0

@@ -1,0 +1,44 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/andeslog-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::Retries "3";' >> /etc/apt/apt.conf.d/99force-ipv4
+apt-get -o Acquire::ForceIPv4=true update -y
+apt-get -o Acquire::ForceIPv4=true install -y docker.io
+systemctl enable --now docker
+
+# Pull the image when the registry permits anonymous access. For a private GHCR
+# package, the image can be loaded from a verified archive without copying a PAT
+# onto the EC2 instance. Continue bootstrap so the service unit is ready.
+if ! docker image inspect "${erp_image}" >/dev/null 2>&1; then
+  if ! docker pull "${erp_image}"; then
+    echo "ERP image pull failed; load ${erp_image} with docker load before starting the service." >&2
+  fi
+fi
+
+install -d -o root -g root -m 0755 /etc/andeslog-app
+cat > /etc/systemd/system/andeslog-web.service <<'UNIT'
+[Unit]
+Description=AndesLog ERP container
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+ConditionPathExists=/etc/andeslog-app/erp.env
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f andeslog-erp
+ExecStart=/usr/bin/docker run --rm --name andeslog-erp --publish 8080:8000 --env-file /etc/andeslog-app/erp.env ${erp_image} gunicorn --workers 2 --bind 0.0.0.0:8000 'app:create_app()'
+ExecStop=/usr/bin/docker stop --time 30 andeslog-erp
+ExecStopPost=-/usr/bin/docker rm -f andeslog-erp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable andeslog-web.service
+echo "ERP service prepared for ${erp_image}. Ensure the image is loaded, create /etc/andeslog-app/erp.env, run the one-time DB migration, then start andeslog-web.service." > /var/log/andeslog-web-setup.txt

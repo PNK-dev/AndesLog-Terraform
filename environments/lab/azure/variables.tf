@@ -1,0 +1,101 @@
+variable "project" {
+  description = "Prefijo de nombres del proyecto."
+  type        = string
+  default     = "andeslog"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{1,18}[a-z0-9])$", var.project))
+    error_message = "project debe tener entre 3 y 20 caracteres, iniciar y terminar en letra o número, y usar solo minúsculas, números o guiones."
+  }
+}
+
+variable "environment" {
+  description = "Entorno lógico."
+  type        = string
+  default     = "lab"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,5}[a-z0-9])$", var.environment))
+    error_message = "environment debe tener entre 2 y 7 caracteres, iniciar y terminar en letra o número, y usar solo minúsculas, números o guiones."
+  }
+}
+
+variable "owner" {
+  description = "Equipo responsable del laboratorio."
+  type        = string
+  default     = "equipo"
+}
+
+variable "ttl_date" {
+  description = "Fecha de revisión/destrucción para la etiqueta TTL (AAAA-MM-DD)."
+  type        = string
+  default     = ""
+}
+
+variable "subscription_id" {
+  description = "ID de la suscripción elegida con az login. No es una contraseña."
+  type        = string
+}
+
+variable "create_blob_role_assignment" {
+  description = "Crea Storage Blob Data Contributor en el scope de la cuenta Storage. Déjalo false si la identidad ya tiene acceso; requiere permiso para asignar roles."
+  type        = bool
+  default     = false
+}
+
+variable "azure_location" {
+  description = "Región permitida por la oferta académica."
+  type        = string
+  default     = "chilecentral"
+}
+
+variable "azure_vnet_cidr" {
+  description = "CIDR de la VNet. No debe solaparse con AWS."
+  type        = string
+  default     = "10.20.0.0/16"
+
+  validation {
+    condition     = var.azure_vnet_cidr == "10.20.0.0/16"
+    error_message = "Este root usa subredes y rutas fijas dentro de 10.20.0.0/16; cambia también el diseño completo antes de usar otro CIDR."
+  }
+}
+
+variable "vm_size" {
+  description = "SKU de la VM VPN; validar cuota y disponibilidad regional."
+  type        = string
+  default     = "Standard_B2als_v2"
+}
+
+variable "admin_username" {
+  description = "Usuario Linux administrativo de la VM."
+  type        = string
+  default     = "azureuser"
+}
+
+variable "admin_ssh_public_key" {
+  description = "Clave SSH pública; la clave privada queda en tu equipo."
+  type        = string
+}
+
+variable "admin_public_cidr" {
+  description = "IP pública administrativa /32 para SSH. Vacío deshabilita SSH de Internet."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.admin_public_cidr == "" || (can(cidrnetmask(var.admin_public_cidr)) && endswith(var.admin_public_cidr, "/32"))
+    error_message = "admin_public_cidr debe estar vacío o ser una dirección IPv4 /32."
+  }
+}
+
+variable "aws_peer_public_cidr" {
+  description = "IP pública del peer VPN AWS en formato /32. Vacío hasta conocer el output AWS."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.aws_peer_public_cidr == "" || (can(cidrnetmask(var.aws_peer_public_cidr)) && endswith(var.aws_peer_public_cidr, "/32"))
+    error_message = "aws_peer_public_cidr debe estar vacío o ser una dirección IPv4 /32."
+  }
+}
+

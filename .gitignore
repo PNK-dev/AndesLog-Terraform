@@ -1,0 +1,39 @@
+# Terraform working data and local state
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+crash.log
+crash.*.log
+
+# Local settings and credentials
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+.env
+.env.*
+.aws/
+.azure/
+.ssh/
+credentials
+*.credentials
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*.secrets
+.lab-runtime/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/

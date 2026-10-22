@@ -1,0 +1,12 @@
+project                = "andeslog"
+environment            = "lab"
+owner                  = "equipo"
+ttl_date               = "" # Opcional: fecha de revisión AAAA-MM-DD; no elimina recursos automáticamente.
+subscription_id        = "00000000-0000-0000-0000-000000000000" # Reemplazar con az account show.
+create_blob_role_assignment = false # Solo true si no existe RBAC Blob y la cuenta permite asignar roles.
+azure_location         = "chilecentral"
+vm_size                = "Standard_B2als_v2"
+admin_username         = "azureuser"
+admin_ssh_public_key   = "ssh-ed25519 AAAA... reemplazar-por-clave-publica"
+admin_public_cidr      = "203.0.113.10/32" # Reemplazar por tu IP pública real.
+aws_peer_public_cidr   = ""               # Poner el output vpn_public_ip de AWS seguido de /32.
