@@ -17,7 +17,8 @@ param(
     [string]$AzureUser = 'azureuser',
     [string]$ErpDirectory = '',
     [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.0.0',
-    [switch]$EnableBackupAudit
+    [switch]$EnableBackupAudit,
+    [switch]$EnableRemoteAccess
 )
 
 Set-StrictMode -Version Latest
@@ -84,6 +85,7 @@ function ReadJson([string]$path) {
     return $hash
 }
 $script:backupAuditRequested = $EnableBackupAudit -or ([bool](ReadJson $azureOverlay)['enable_backup_audit'])
+$script:remoteAccessRequested = $EnableRemoteAccess -or ([bool](ReadJson $azureOverlay)['enable_remote_access'])
 function RandomSecret {
     $bytes = New-Object byte[] 36
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -194,6 +196,7 @@ function UpdateOverlays([string]$azureIp, [string]$azureKey, [string]$awsIp, [bo
     $az['admin_ssh_public_key'] = $publicKey
     $az['aws_peer_public_cidr'] = if ($awsIp) { "$awsIp/32" } else { '' }
     $az['enable_backup_audit'] = $script:backupAuditRequested
+    $az['enable_remote_access'] = $script:remoteAccessRequested
     if (-not $az.ContainsKey('enable_backup_event_subscription')) {
         $az['enable_backup_event_subscription'] = $false
     }
@@ -239,6 +242,30 @@ function DeployBackupAudit {
     SaveJson $azureOverlay $az
     Say 'Activando la suscripción Event Grid para los respaldos.'
     Tf $azureRoot @('apply', '-input=false', '-auto-approve', '-no-color')
+}
+function DeployRemoteAccess {
+    if (-not $script:remoteAccessRequested) { return }
+    $account = TfOutput $azureRoot 'files_storage_account_name'
+    $privateIp = TfOutput $azureRoot 'files_private_ip'
+    $publicIp = TfOutput $azureRoot 'vpn_public_ip'
+    if (-not $account -or -not $privateIp -or -not $publicIp) {
+        throw 'Azure no devolvió los datos necesarios para OpenVPN y Azure Files.'
+    }
+    Say 'Configurando OpenVPN para usuarios y acceso privado a Azure Files.'
+    foreach ($name in @('configure-remote-access.sh', 'manage-remote-user.sh')) {
+        $local = Join-Path $repo "scripts\$name"
+        $remote = "/tmp/$name"
+        Upload $local 'azure-vpn' $remote
+    }
+    Remote 'azure-vpn' "sudo bash /tmp/configure-remote-access.sh $account $privateIp $publicIp"
+    Remote 'azure-vpn' 'sudo install -o root -g root -m 0750 /tmp/manage-remote-user.sh /usr/local/sbin/andeslog-manage-user && rm -f /tmp/configure-remote-access.sh /tmp/manage-remote-user.sh'
+    $profileDir = Join-Path $repo '.lab-runtime'
+    if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir -Force | Out-Null }
+    $profile = Join-Path $profileDir 'andeslog-windows.ovpn'
+    Remote 'azure-vpn' "sudo install -o $AzureUser -g $AzureUser -m 0600 /etc/openvpn/andeslog/andeslog-windows.ovpn /home/$AzureUser/andeslog-windows.ovpn"
+    try { Native 'scp' @('-F', $sshConfig, 'azure-vpn:andeslog-windows.ovpn', $profile) }
+    finally { Remote 'azure-vpn' 'rm -f ~/andeslog-windows.ovpn' }
+    Say "Perfil VPN para Windows: $profile (contiene una clave compartida; distribúyelo por un canal seguro)."
 }
 function PrepareSecrets([string]$dbIp) {
     $vars = @{}
@@ -331,6 +358,7 @@ function Deploy {
     if (-not $azureIp) { throw 'Azure no devolvió vpn_public_ip.' }
     SetupSsh $azureIp '127.0.0.1'
     Remote 'azure-vpn' 'cloud-init status --wait'
+    DeployRemoteAccess
     $azureKey = RemoteOutput 'azure-vpn' "sudo sh -c 'umask 077; test -s /etc/wireguard/privatekey || wg genkey > /etc/wireguard/privatekey; wg pubkey < /etc/wireguard/privatekey'"
     if ($azureKey -notmatch '^[A-Za-z0-9+/]{43}=$') { throw 'Clave WireGuard Azure inválida.' }
     UpdateOverlays $azureIp $azureKey $oldAwsIp $true
@@ -415,6 +443,7 @@ try {
         'Status' {
             Say "Azure VPN: $(TfOutput $azureRoot 'vpn_public_ip')"
             Say "BackupAudit: $(TfOutput $azureRoot 'backup_audit_function_name')"
+            Say "Azure Files: $(TfOutput $azureRoot 'files_storage_account_name')"
             Say "AWS VPN: $(TfOutput $awsRoot 'vpn_public_ip')"
             Say "ERP: http://$(TfOutput $awsRoot 'alb_dns_name')/"
         }

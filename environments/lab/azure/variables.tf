@@ -49,6 +49,23 @@ variable "enable_backup_audit" {
   default     = false
 }
 
+variable "enable_remote_access" {
+  description = "Crea Azure Files privado y abre OpenVPN en la VM Azure existente. scripts/lab.ps1 configura el servidor fuera de Terraform."
+  type        = bool
+  default     = false
+}
+
+variable "azure_files_quota_gb" {
+  description = "Cuota máxima en GiB del recurso compartido Azure Files."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.azure_files_quota_gb >= 1 && var.azure_files_quota_gb <= 5120 && floor(var.azure_files_quota_gb) == var.azure_files_quota_gb
+    error_message = "azure_files_quota_gb debe ser un entero entre 1 y 5120."
+  }
+}
+
 variable "enable_backup_event_subscription" {
   description = "Se activa tras publicar el código de BackupAudit; scripts/lab.ps1 lo gestiona automáticamente."
   type        = bool

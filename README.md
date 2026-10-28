@@ -1,6 +1,6 @@
 # AndesLog — laboratorio Terraform para AWS y Azure
 
-Este repositorio contiene dos configuraciones Terraform independientes para desplegar el laboratorio AndesLog: una administra AWS y otra Azure. AWS aloja el balanceador, dos EC2 privadas con el contenedor del ERP y una EC2 PostgreSQL con disco EBS separado. Azure aloja WireGuard, el destino de backups Blob y, opcionalmente, una Azure Function que audita cada backup nuevo. Terraform administra infraestructura; WireGuard y los secretos de aplicación se configuran fuera del código y del estado.
+Este repositorio contiene dos configuraciones Terraform independientes para desplegar el laboratorio AndesLog: una administra AWS y otra Azure. AWS aloja el balanceador, dos EC2 privadas con el contenedor del ERP y una EC2 PostgreSQL con disco EBS separado. Azure aloja WireGuard, el destino de backups Blob y, opcionalmente, una Azure Function que audita cada backup nuevo y acceso remoto Windows a Azure Files. Terraform administra infraestructura; WireGuard y los secretos de aplicación se configuran fuera del código y del estado.
 
 > **Alcance de laboratorio académico.** El ERP es un MVP y el ALB sigue usando HTTP; no envíes credenciales por una red pública sin TLS. PostgreSQL, ambas VM VPN y el túnel WireGuard son puntos únicos de falla. No es una configuración lista para producción.
 
@@ -24,6 +24,8 @@ El diagrama refleja el despliegue verificado el 15 de octubre de 2026. Los respa
 | Alarmas y dashboard de CloudWatch | |
 
 Con `-EnableBackupAudit`, Azure añade un plan Functions Consumption, una Function Python, Event Grid, una identidad administrada, una cuenta Storage para el host y un contenedor privado `backup-audit`. El diagrama anterior representa la arquitectura base y no incluye esta extensión opcional.
+
+Con `-EnableRemoteAccess`, la misma VM VPN Azure ejecuta también OpenVPN para usuarios. Se añade una cuenta Azure Files Standard LRS, el share SMB `andeslog`, Private Endpoint y DNS privado. Los clientes solo pueden alcanzar el endpoint de Files por TCP 445; WireGuard continúa enlazando Azure con AWS. El diagrama anterior tampoco incluye esta extensión opcional.
 
 Las alarmas se crean sin SNS ni Action Group: se consultan en CloudWatch/Azure Monitor, pero no envían correo ni notificaciones automáticas.
 
@@ -449,6 +451,37 @@ Luego, en ambas EC2 web, ejecuta `sudo systemctl start andeslog-web`. Verifica `
 **Cambio con impacto:** `user_data_replace_on_change = true` reemplaza las EC2 web si cambia su bootstrap. La EC2 PostgreSQL ignora cambios posteriores en `user_data`, por lo que corregir su script no lo reaplica automáticamente. Antes de modificar recursos de datos, respalda la base y revisa el plan junto con el volumen EBS.
 
 El acceso web de muestra usa HTTP en el puerto 80 del ALB para el laboratorio. No envíes información sensible por esa API ni la uses como servicio productivo.
+
+## VPN de usuarios Windows y carpeta corporativa Azure Files
+
+Activa esta extensión al desplegar desde un clon, sin editar el código:
+
+```powershell
+.\scripts\lab.ps1 -Action Deploy -EnableRemoteAccess
+```
+
+Puedes combinar `-EnableRemoteAccess` y `-EnableBackupAudit`. El script conserva la elección en el overlay local ignorado por Git; `Recreate` la reaplica y `Destroy` elimina la cuenta Files, el share y el endpoint privado. OpenVPN se instala en la VM Azure ya existente, junto a WireGuard. El perfil de cliente se guarda en `.lab-runtime/andeslog-windows.ovpn` (ignorado por Git); incluye la clave TLS compartida y debes distribuirlo por un canal seguro. **Una contraseña sin ese perfil no conecta.** Cada persona debe tener su propio usuario VPN; no compartas la cuenta administrativa SSH.
+
+Crear o actualizar un usuario VPN desde la máquina administradora:
+
+```powershell
+.\scripts\remote-user.ps1 -Action Add -Username vpn_ana
+```
+
+El script pide una contraseña de al menos 12 caracteres y la envía por SSH sin guardarla en Terraform. Los nombres VPN llevan el prefijo `vpn_`. Para revocar el acceso, ejecuta `.\scripts\remote-user.ps1 -Action Disable -Username vpn_ana`. La revocación reinicia OpenVPN para cerrar sesiones activas, lo que desconecta brevemente a todos los clientes. La clave de Azure Files se gestiona por separado.
+
+En el PC Windows cliente, instala [OpenVPN Connect](https://openvpn.net/client/), importa `andeslog-windows.ovpn` y conecta con su usuario y contraseña VPN. Después verifica que el nombre de Azure Files resuelve a la IP privada de `files_private_ip` y que TCP 445 responde:
+
+```powershell
+$account = '<files_storage_account_name>'
+Resolve-DnsName "$account.file.core.windows.net"
+Test-NetConnection "$account.file.core.windows.net" -Port 445
+net use Z: "\\${account}.file.core.windows.net\andeslog" /user:"Azure\$account" * /persistent:yes
+```
+
+`net use` solicitará una **segunda credencial**: la clave de la cuenta Storage de Azure Files, obtenida por el administrador en **Storage account → Access keys** del portal de Azure. Es una clave amplia para esa cuenta; mantenemos una cuenta separada dedicada al share y su endpoint público está deshabilitado. No pegues la clave en el comando, en `terraform.tfvars`, en Git ni en el perfil VPN. Al conectar, `Z:` aparece en el Explorador de archivos. El usuario que necesite otra letra puede cambiarla. Este esquema de laboratorio no ofrece permisos individuales dentro del share; para un entorno corporativo final habría que integrar identidad de archivos por usuario.
+
+Desde el root Terraform puedes consultar `terraform output -raw files_storage_account_name` y `terraform output -raw files_private_ip`. Si tu laptop ya tiene infraestructura activa, el mismo `Deploy -EnableRemoteAccess` agrega la extensión sin cambiar el estado HCP de AWS; conserva el secreto ERP y la clave SSH correspondientes. La cuenta Azure for Students debe admitir Private Endpoint, Azure Files y cuotas disponibles en la región. Azure Files y Private Endpoint pueden consumir créditos mientras existan. Esta solución usa una sola VM VPN, que sigue siendo punto único de falla. [Azure Files sobre VPN](https://learn.microsoft.com/en-us/azure/storage/files/storage-files-configure-p2s-vpn-windows) · [Red y puerto SMB](https://learn.microsoft.com/en-us/azure/storage/files/storage-files-networking-overview) · [Autenticación OpenVPN](https://openvpn.net/community-docs/using-alternative-authentication-methods/)
 
 ## Respaldos hacia Azure Blob y S3 opcional
 

@@ -43,6 +43,21 @@ output "backup_audit_container_name" {
   value       = var.enable_backup_audit ? azurerm_storage_container.backup_audit[0].name : ""
 }
 
+output "files_storage_account_name" {
+  description = "Cuenta privada Azure Files corporativa, si está activada."
+  value       = var.enable_remote_access ? azurerm_storage_account.shared_files[0].name : ""
+}
+
+output "files_share_name" {
+  description = "Nombre del recurso compartido SMB."
+  value       = var.enable_remote_access ? azurerm_storage_share.corporate[0].name : ""
+}
+
+output "files_private_ip" {
+  description = "IP privada del endpoint Azure Files; el cliente VPN debe resolver el FQDN a esta dirección."
+  value       = var.enable_remote_access ? azurerm_private_endpoint.files[0].private_service_connection[0].private_ip_address : ""
+}
+
 output "wireguard_peer_cidr_for_aws" {
   description = "Copiar este valor a azure_peer_public_cidr del archivo AWS tfvars."
   value       = "${azurerm_public_ip.vpn.ip_address}/32"
