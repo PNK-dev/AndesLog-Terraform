@@ -16,7 +16,8 @@ param(
     [string]$SshPrivateKey = "$env:USERPROFILE\.ssh\id_ed25519",
     [string]$AzureUser = 'azureuser',
     [string]$ErpDirectory = '',
-    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.0.0'
+    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.0.0',
+    [switch]$EnableBackupAudit
 )
 
 Set-StrictMode -Version Latest
@@ -82,6 +83,7 @@ function ReadJson([string]$path) {
     foreach ($property in $obj.PSObject.Properties) { $hash[$property.Name] = $property.Value }
     return $hash
 }
+$script:backupAuditRequested = $EnableBackupAudit -or ([bool](ReadJson $azureOverlay)['enable_backup_audit'])
 function RandomSecret {
     $bytes = New-Object byte[] 36
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -191,6 +193,10 @@ function UpdateOverlays([string]$azureIp, [string]$azureKey, [string]$awsIp, [bo
     $az['admin_public_cidr'] = $AdminPublicCidr
     $az['admin_ssh_public_key'] = $publicKey
     $az['aws_peer_public_cidr'] = if ($awsIp) { "$awsIp/32" } else { '' }
+    $az['enable_backup_audit'] = $script:backupAuditRequested
+    if (-not $az.ContainsKey('enable_backup_event_subscription')) {
+        $az['enable_backup_event_subscription'] = $false
+    }
     SaveJson $azureOverlay $az
     $aw = ReadJson $awsOverlay
     $aw['admin_public_cidr'] = $AdminPublicCidr
@@ -200,6 +206,39 @@ function UpdateOverlays([string]$azureIp, [string]$azureKey, [string]$awsIp, [bo
     $aw['erp_image'] = $ErpImage
     $aw['enable_temporary_nat'] = $nat
     SaveJson $awsOverlay $aw
+}
+function EnsureBackupProviders {
+    if (-not $script:backupAuditRequested) { return }
+    foreach ($namespace in @('Microsoft.Web', 'Microsoft.EventGrid', 'Microsoft.ManagedIdentity')) {
+        $registration = Capture 'az' @('provider', 'show', '--namespace', $namespace, '--query', 'registrationState', '-o', 'tsv')
+        if ($registration -ne 'Registered') {
+            Say "Registrando proveedor Azure $namespace para BackupAudit."
+            Native 'az' @('provider', 'register', '--namespace', $namespace, '--wait')
+        }
+    }
+}
+function DeployBackupAudit {
+    if (-not $script:backupAuditRequested) { return }
+    $appName = TfOutput $azureRoot 'backup_audit_function_name'
+    $groupName = TfOutput $azureRoot 'resource_group_name'
+    if (-not $appName -or -not $groupName) { throw 'Azure no devolvió la Function o el Resource Group de BackupAudit.' }
+    $source = Join-Path $repo 'functions\backup-audit'
+    $package = Join-Path $work 'backup-audit.zip'
+    Compress-Archive -Path (Join-Path $source '*') -DestinationPath $package -Force
+    Say "Publicando BackupAudit en $appName."
+    Native 'az' @('functionapp', 'deployment', 'source', 'config-zip', '--resource-group', $groupName, '--name', $appName, '--src', $package, '--build-remote', 'true', '--output', 'none')
+    $published = $false
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        $functionName = & az functionapp function show --resource-group $groupName --name $appName --function-name BackupAudit --query name -o tsv 2>$null
+        if ($LASTEXITCODE -eq 0 -and $functionName) { $published = $true; break }
+        Start-Sleep -Seconds 5
+    }
+    if (-not $published) { throw 'BackupAudit no apareció en Azure después de publicar el paquete; no se activó Event Grid.' }
+    $az = ReadJson $azureOverlay
+    $az['enable_backup_event_subscription'] = $true
+    SaveJson $azureOverlay $az
+    Say 'Activando la suscripción Event Grid para los respaldos.'
+    Tf $azureRoot @('apply', '-input=false', '-auto-approve', '-no-color')
 }
 function PrepareSecrets([string]$dbIp) {
     $vars = @{}
@@ -280,12 +319,14 @@ function Deploy {
         throw "Existe una base AWS y falta $secretPath. Recupera el secreto local previo o usa Recreate si aceptas perder los datos."
     }
     if (-not $script:archive) { BuildErp }
+    EnsureBackupProviders
     $oldAwsIp = TfOutput $awsRoot 'vpn_public_ip'
     $oldAzureIp = TfOutput $azureRoot 'vpn_public_ip'
     $oldAzKey = (ReadJson $awsOverlay)['azure_wireguard_public_key']
     UpdateOverlays $oldAzureIp $oldAzKey $oldAwsIp $true
     Say 'Fase 1/5: Azure.'
     Tf $azureRoot @('apply', '-input=false', '-auto-approve', '-no-color')
+    DeployBackupAudit
     $azureIp = TfOutput $azureRoot 'vpn_public_ip'
     if (-not $azureIp) { throw 'Azure no devolvió vpn_public_ip.' }
     SetupSsh $azureIp '127.0.0.1'
@@ -373,6 +414,7 @@ try {
     switch ($Action) {
         'Status' {
             Say "Azure VPN: $(TfOutput $azureRoot 'vpn_public_ip')"
+            Say "BackupAudit: $(TfOutput $azureRoot 'backup_audit_function_name')"
             Say "AWS VPN: $(TfOutput $awsRoot 'vpn_public_ip')"
             Say "ERP: http://$(TfOutput $awsRoot 'alb_dns_name')/"
         }

@@ -43,6 +43,29 @@ variable "create_blob_role_assignment" {
   default     = false
 }
 
+variable "enable_backup_audit" {
+  description = "Crea la Azure Function que audita backups Blob; requiere Microsoft.Web, Microsoft.EventGrid y permiso para asignar roles."
+  type        = bool
+  default     = false
+}
+
+variable "enable_backup_event_subscription" {
+  description = "Se activa tras publicar el código de BackupAudit; scripts/lab.ps1 lo gestiona automáticamente."
+  type        = bool
+  default     = false
+}
+
+variable "backup_audit_max_bytes" {
+  description = "Tamaño máximo, en bytes, de un backup cuyo SHA-256 calculará la Function."
+  type        = number
+  default     = 1073741824
+
+  validation {
+    condition     = var.backup_audit_max_bytes > 0 && floor(var.backup_audit_max_bytes) == var.backup_audit_max_bytes
+    error_message = "backup_audit_max_bytes debe ser un entero positivo."
+  }
+}
+
 variable "azure_location" {
   description = "Región permitida por la oferta académica."
   type        = string

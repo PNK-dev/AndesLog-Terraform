@@ -1,6 +1,6 @@
 # AndesLog — laboratorio Terraform para AWS y Azure
 
-Este repositorio contiene dos configuraciones Terraform independientes para desplegar el laboratorio AndesLog: una administra AWS y otra Azure. AWS aloja el balanceador, dos EC2 privadas con el contenedor del ERP y una EC2 PostgreSQL con disco EBS separado. Azure aloja WireGuard y el destino de backups Blob. Terraform administra infraestructura; WireGuard y los secretos de aplicación se configuran fuera del código y del estado.
+Este repositorio contiene dos configuraciones Terraform independientes para desplegar el laboratorio AndesLog: una administra AWS y otra Azure. AWS aloja el balanceador, dos EC2 privadas con el contenedor del ERP y una EC2 PostgreSQL con disco EBS separado. Azure aloja WireGuard, el destino de backups Blob y, opcionalmente, una Azure Function que audita cada backup nuevo. Terraform administra infraestructura; WireGuard y los secretos de aplicación se configuran fuera del código y del estado.
 
 > **Alcance de laboratorio académico.** El ERP es un MVP y el ALB sigue usando HTTP; no envíes credenciales por una red pública sin TLS. PostgreSQL, ambas VM VPN y el túnel WireGuard son puntos únicos de falla. No es una configuración lista para producción.
 
@@ -23,6 +23,8 @@ El diagrama refleja el despliegue verificado el 15 de octubre de 2026. Los respa
 | Bucket S3 privado opcional, cifrado SSE-S3 y lifecycle cuando la cuenta lo permite | Autenticación de almacenamiento mediante Microsoft Entra ID |
 | Alarmas y dashboard de CloudWatch | |
 
+Con `-EnableBackupAudit`, Azure añade un plan Functions Consumption, una Function Python, Event Grid, una identidad administrada, una cuenta Storage para el host y un contenedor privado `backup-audit`. El diagrama anterior representa la arquitectura base y no incluye esta extensión opcional.
+
 Las alarmas se crean sin SNS ni Action Group: se consultan en CloudWatch/Azure Monitor, pero no envían correo ni notificaciones automáticas.
 
 Las cuatro instancias `t3.micro` de AWS consumen juntas 8 vCPU: cada `t3.micro` tiene 2 vCPU según la tabla oficial de EC2. Revisa la cuota vigente del laboratorio antes de desplegar. Las subredes usan `10.10.0.0/16` en AWS y `10.20.0.0/16` en Azure; no las cambies sin actualizar también las rutas, reglas y scripts WireGuard. [Referencia AWS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-t3.html)
@@ -33,6 +35,7 @@ Las cuatro instancias `t3.micro` de AWS consumen juntas 8 vCPU: cada `t3.micro` 
 app/                         API HTTP heredada (no es el origen del ERP)
 environments/lab/aws/        Root module AWS y workspace remoto HCP Terraform
 environments/lab/azure/      Root module Azure y workspace remoto HCP Terraform
+functions/backup-audit/      Código Python de la Azure Function de auditoría
 scripts/                     cloud-init, WireGuard, SQL y carga de backups
 README.md
 ```
@@ -197,8 +200,8 @@ Un clon nuevo creado por tu usuario normalmente no necesita esa excepción.
 - Instalación oficial para Windows: [Terraform CLI](https://developer.hashicorp.com/terraform/tutorials/aws-get-started/install-cli), [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) y [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-windows?view=azure-cli-lts). Abre una nueva terminal después de instalar y confirma con `terraform version`, `aws --version`, `az version` y `ssh -V`.
 - Antes de `apply`, confirma en las consolas académicas: créditos disponibles, vigencia de la sesión, cuotas de vCPU/VM/disco/IP, SKUs permitidas, regiones habilitadas, política de recursos y permisos de creación. Un plan válido no garantiza que la política académica permita ejecutar cada API.
 - La suscripción Azure usada en este despliegue permite `chilecentral`, `canadacentral`, `westus2`, `westus` y `mexicocentral`; el laboratorio queda configurado por defecto en `chilecentral`. La disponibilidad real de capacidad para cada SKU puede variar.
-- En AWS puede faltar el service-linked role que necesita el ALB. Terraform no crea usuarios/roles/políticas IAM de AWS ni roles personalizados de Azure. La única asignación Azure incluida es opt-in, acotada a la cuenta Storage y desactivada por defecto mediante `create_blob_role_assignment`.
-- En Azure este root configura `resource_provider_registrations = "none"`. Verifica que estén registrados `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Storage`, `Microsoft.Insights` y `Microsoft.Authorization`; el proveedor no intentará registrarlos por ti.
+- En AWS puede faltar el service-linked role que necesita el ALB. Terraform no crea usuarios/roles/políticas IAM de AWS ni roles personalizados de Azure. `create_blob_role_assignment` sigue desactivado por defecto. La extensión opcional BackupAudit crea además un rol de datos Blob para su identidad administrada.
+- En Azure este root configura `resource_provider_registrations = "none"`. Verifica que estén registrados `Microsoft.Compute`, `Microsoft.Network`, `Microsoft.Storage`, `Microsoft.Insights` y `Microsoft.Authorization`; el proveedor no intentará registrarlos por ti. Si activas BackupAudit, `lab.ps1` intenta registrar también `Microsoft.Web`, `Microsoft.EventGrid` y `Microsoft.ManagedIdentity`.
 - La creación del contenedor Blob usa Microsoft Entra ID y el valor predeterminado `create_blob_role_assignment = false`, de acuerdo con la especificación: Terraform no asigna roles por defecto. La identidad que ejecuta Terraform necesita el rol **Storage Blob Data Contributor** existente en la cuenta o en un scope superior. Si no existe y la oferta académica permite asignar roles, puedes activar `create_blob_role_assignment = true` en el `terraform.tfvars` de Azure; requiere `Microsoft.Authorization/roleAssignments/write` (por ejemplo, Owner o User Access Administrator en ese scope). Después de una asignación, la propagación puede tardar varios minutos. [Microsoft documenta los roles y permisos de Blob](https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access?tabs=portal); [HashiCorp documenta `azurerm_role_assignment`](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/role_assignment).
 - El contenedor Blob tiene acceso anónimo desactivado. La cuenta acepta tráfico desde redes públicas para permitir uploads autenticados desde tu equipo; no se crea Private Endpoint en esta versión.
 - Azure permite por defecto el DNS de plataforma; no se crea una regla `Allow` para `AzurePlatformDNS`, ya que solo se admiten reglas `Deny` explícitas para bloquear ese tráfico. El bloqueo general de salida se limita al tag `Internet`.
@@ -472,6 +475,29 @@ Después de crear un archivo de respaldo PostgreSQL en tu equipo, confirma que A
 ```
 
 Obtén el nombre desde el root Azure con `Push-Location .\environments\lab\azure; terraform output -raw storage_account_name; Pop-Location`. Si `enable_aws_s3_backups` está activado en una cuenta compatible, obtén `backup_bucket_name` del root AWS de la misma forma y pasa `-S3Bucket <nombre>`; el script carga entonces a ambos destinos.
+
+### Azure Function BackupAudit (opcional)
+
+Para incluir la auditoría serverless en un despliegue nuevo o existente, usa el mismo comando del laboratorio con `-EnableBackupAudit`:
+
+```powershell
+.\scripts\lab.ps1 -Action Deploy -EnableBackupAudit
+```
+
+El script guarda esta elección en un overlay local ignorado por Git; `Deploy` y `Recreate` posteriores la conservan. Primero Terraform crea el host y la identidad, después `lab.ps1` publica `functions/backup-audit` con compilación remota y finalmente Terraform crea la suscripción Event Grid. No edites `enable_backup_event_subscription` a mano. `Destroy` elimina todos estos recursos junto con el resto del laboratorio. Si ya tienes la infraestructura desplegada, `Deploy` continúa sobre los mismos workspaces HCP; verifica primero que las credenciales del ERP y la clave SSH local siguen disponibles.
+
+La suscripción escucha `Microsoft.Storage.BlobCreated` únicamente bajo `backups/` del contenedor `backups`. La función lee el Blob por identidad administrada, comprueba su tamaño y calcula SHA-256 en bloques. Escribe un JSON con `status`, tamaño, hash, ETag y hora UTC en el contenedor privado `backup-audit`. Los estados son `ok`, `empty`, `oversize` o `size_mismatch`; el límite inicial es 1 GiB y se ajusta mediante `backup_audit_max_bytes` en `environments/lab/azure/terraform.tfvars`. Un backup demasiado grande queda registrado sin descargarlo para calcular el hash. La función se puede repetir para el mismo objeto y actualiza el registro correspondiente. Esta auditoría no crea dumps ni restaura PostgreSQL.
+
+```powershell
+$account = terraform -chdir=environments/lab/azure output -raw storage_account_name
+$function = terraform -chdir=environments/lab/azure output -raw backup_audit_function_name
+az functionapp function show --resource-group andeslog-lab-rg --name $function --function-name BackupAudit --query name -o tsv
+az storage blob list --account-name $account --container-name backup-audit --auth-mode login --query "[].name" -o tsv
+```
+
+Sube un dump con `upload-backup.ps1`, espera la entrega de Event Grid y consulta el JSON con `az storage blob download --account-name $account --container-name backup-audit --name <nombre-json> --file <ruta-local> --auth-mode login`. El usuario de Azure CLI también necesita acceso de lectura a ese contenedor. Para ver invocaciones y errores, consulta **Function App → Monitor** en Azure Portal.
+
+La cuenta Azure for Students debe permitir registrar `Microsoft.Web`, `Microsoft.EventGrid` y `Microsoft.ManagedIdentity`, crear el plan Y1 en la región seleccionada y asignar **Storage Blob Data Contributor** a la identidad de la función (`Microsoft.Authorization/roleAssignments/write`). Si lo deniega, el script se detiene antes de crear AWS. El host Functions usa una cuenta Storage propia con clave de acceso; esa clave aparece como dato sensible en el estado remoto HCP y no debe compartirse. La cuenta que almacena los backups sigue con claves compartidas deshabilitadas. La extensión puede generar cargos por ejecuciones de Functions, eventos Event Grid, operaciones y capacidad de Storage; `Destroy` los detiene al eliminar los recursos. [Event Grid con Functions](https://learn.microsoft.com/en-us/azure/azure-functions/functions-bindings-event-grid-trigger) · [Despliegue ZIP de Functions](https://learn.microsoft.com/en-us/azure/azure-functions/deployment-zip-push) · [Rol de datos Blob](https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access)
 
 ## Revisión y destrucción total del laboratorio
 

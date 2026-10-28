@@ -33,6 +33,16 @@ output "blob_endpoint" {
   value       = azurerm_storage_account.backups.primary_blob_endpoint
 }
 
+output "backup_audit_function_name" {
+  description = "Nombre de la Azure Function de auditoría, si está activada."
+  value       = var.enable_backup_audit ? azurerm_linux_function_app.backup_audit[0].name : ""
+}
+
+output "backup_audit_container_name" {
+  description = "Contenedor privado con los resultados JSON de auditoría."
+  value       = var.enable_backup_audit ? azurerm_storage_container.backup_audit[0].name : ""
+}
+
 output "wireguard_peer_cidr_for_aws" {
   description = "Copiar este valor a azure_peer_public_cidr del archivo AWS tfvars."
   value       = "${azurerm_public_ip.vpn.ip_address}/32"
