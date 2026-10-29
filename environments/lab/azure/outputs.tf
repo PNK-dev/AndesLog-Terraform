@@ -35,7 +35,7 @@ output "blob_endpoint" {
 
 output "backup_audit_function_name" {
   description = "Nombre de la Azure Function de auditoría, si está activada."
-  value       = var.enable_backup_audit ? azurerm_linux_function_app.backup_audit[0].name : ""
+  value       = var.enable_backup_audit ? azurerm_function_app_flex_consumption.backup_audit[0].name : ""
 }
 
 output "backup_audit_container_name" {

@@ -5,6 +5,7 @@ ttl_date               = "" # Opcional: fecha de revisión AAAA-MM-DD; no elimin
 subscription_id        = "00000000-0000-0000-0000-000000000000" # Reemplazar con az account show.
 create_blob_role_assignment = false # Solo true si no existe RBAC Blob y la cuenta permite asignar roles.
 enable_backup_audit   = false # Usar -EnableBackupAudit en scripts/lab.ps1 para activarlo sin editar este archivo.
+backup_function_location = "westus2" # Flex Consumption está disponible aquí; Chile Central no aparece en la lista Flex de la suscripción.
 enable_remote_access = false # Usar -EnableRemoteAccess en scripts/lab.ps1 para VPN de usuarios y Azure Files.
 azure_files_quota_gb = 10
 azure_location         = "chilecentral"

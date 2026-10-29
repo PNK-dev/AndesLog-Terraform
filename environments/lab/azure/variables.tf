@@ -49,6 +49,12 @@ variable "enable_backup_audit" {
   default     = false
 }
 
+variable "backup_function_location" {
+  description = "Región compatible con Flex Consumption para el host de Azure Functions; puede diferir de la VM y Blob."
+  type        = string
+  default     = "westus2"
+}
+
 variable "enable_remote_access" {
   description = "Crea Azure Files privado y abre OpenVPN en la VM Azure existente. scripts/lab.ps1 configura el servidor fuera de Terraform."
   type        = bool

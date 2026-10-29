@@ -9,7 +9,7 @@ resource "azurerm_storage_account" "function_host" {
   count                           = var.enable_backup_audit ? 1 : 0
   name                            = local.function_host_name
   resource_group_name             = azurerm_resource_group.main.name
-  location                        = azurerm_resource_group.main.location
+  location                        = var.backup_function_location
   account_kind                    = "StorageV2"
   account_tier                    = "Standard"
   account_replication_type        = "LRS"
@@ -17,6 +17,13 @@ resource "azurerm_storage_account" "function_host" {
   https_traffic_only_enabled      = true
   allow_nested_items_to_be_public = false
   tags                            = merge(local.common_tags, { Purpose = "function-host" })
+}
+
+resource "azurerm_storage_container" "function_deploy" {
+  count                 = var.enable_backup_audit ? 1 : 0
+  name                  = "backup-audit-code"
+  storage_account_id    = azurerm_storage_account.function_host[0].id
+  container_access_type = "private"
 }
 
 resource "azurerm_user_assigned_identity" "backup_audit" {
@@ -47,21 +54,26 @@ resource "azurerm_service_plan" "backup_audit" {
   count               = var.enable_backup_audit ? 1 : 0
   name                = "${local.prefix}-audit-plan"
   resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
+  location            = var.backup_function_location
   os_type             = "Linux"
-  sku_name            = "Y1"
+  sku_name            = "FC1"
   tags                = merge(local.common_tags, { Purpose = "backup-audit" })
 }
 
-resource "azurerm_linux_function_app" "backup_audit" {
+resource "azurerm_function_app_flex_consumption" "backup_audit" {
   count                       = var.enable_backup_audit ? 1 : 0
   name                        = local.backup_function_name
   resource_group_name         = azurerm_resource_group.main.name
-  location                    = azurerm_resource_group.main.location
+  location                    = var.backup_function_location
   service_plan_id             = azurerm_service_plan.backup_audit[0].id
-  storage_account_name        = azurerm_storage_account.function_host[0].name
-  storage_account_access_key  = azurerm_storage_account.function_host[0].primary_access_key
-  functions_extension_version = "~4"
+  storage_container_type      = "blobContainer"
+  storage_container_endpoint  = "${azurerm_storage_account.function_host[0].primary_blob_endpoint}${azurerm_storage_container.function_deploy[0].name}"
+  storage_authentication_type = "StorageAccountConnectionString"
+  storage_access_key          = azurerm_storage_account.function_host[0].primary_access_key
+  runtime_name                = "python"
+  runtime_version             = "3.12"
+  instance_memory_in_mb       = 512
+  maximum_instance_count      = 3
   https_only                  = true
 
   identity {
@@ -70,21 +82,14 @@ resource "azurerm_linux_function_app" "backup_audit" {
   }
 
   app_settings = {
-    FUNCTIONS_WORKER_RUNTIME       = "python"
-    SCM_DO_BUILD_DURING_DEPLOYMENT = "true"
-    ENABLE_ORYX_BUILD              = "true"
-    BACKUP_ACCOUNT_NAME            = azurerm_storage_account.backups.name
-    BACKUP_CONTAINER               = azurerm_storage_container.backups.name
-    AUDIT_CONTAINER                = azurerm_storage_container.backup_audit[0].name
-    MAX_BACKUP_BYTES               = tostring(var.backup_audit_max_bytes)
-    AZURE_CLIENT_ID                = azurerm_user_assigned_identity.backup_audit[0].client_id
+    BACKUP_ACCOUNT_NAME = azurerm_storage_account.backups.name
+    BACKUP_CONTAINER    = azurerm_storage_container.backups.name
+    AUDIT_CONTAINER     = azurerm_storage_container.backup_audit[0].name
+    MAX_BACKUP_BYTES    = tostring(var.backup_audit_max_bytes)
+    AZURE_CLIENT_ID     = azurerm_user_assigned_identity.backup_audit[0].client_id
   }
 
-  site_config {
-    application_stack {
-      python_version = "3.12"
-    }
-  }
+  site_config {}
 
   tags       = merge(local.common_tags, { Purpose = "backup-audit" })
   depends_on = [azurerm_role_assignment.backup_audit_blob]
@@ -104,6 +109,8 @@ resource "azurerm_eventgrid_event_subscription" "backup_audit" {
   }
 
   azure_function_endpoint {
-    function_id = "${azurerm_linux_function_app.backup_audit[0].id}/functions/BackupAudit"
+    function_id                       = "${azurerm_function_app_flex_consumption.backup_audit[0].id}/functions/BackupAudit"
+    max_events_per_batch              = 1
+    preferred_batch_size_in_kilobytes = 64
   }
 }
