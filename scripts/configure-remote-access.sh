@@ -176,6 +176,7 @@ verify-x509-name andeslog-vpn name
 setenv CLIENT_CERT 0
 auth-user-pass
 auth-nocache
+setenv ALLOW_PASSWORD_SAVE 0
 tls-version-min 1.2
 data-ciphers AES-256-GCM:AES-128-GCM
 verb 3
