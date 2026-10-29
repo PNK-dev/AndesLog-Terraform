@@ -13,6 +13,7 @@ web_instance_type       = "t3.micro"
 db_instance_type        = "t3.micro"
 vpn_instance_type       = "t3.micro"
 erp_image               = "ghcr.io/organizacion/andeslog-erp:1.0.0" # lab.ps1 sobrescribe este valor y carga la imagen por SSH, incluso si GHCR es privado.
+alb_certificate_arn     = "" # Recomendado: ARN ACM validado para un dominio propio; habilita HTTPS y redirección desde HTTP.
 enable_temporary_nat    = true              # Solo durante el primer bootstrap; luego cambiar a false.
 create_vpn_eip          = false             # Activar solo si el Learner Lab permite Elastic IP.
 route_db_to_azure       = false

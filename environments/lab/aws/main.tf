@@ -196,11 +196,21 @@ resource "aws_security_group" "vpn" {
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
   security_group_id = aws_security_group.alb.id
-  description       = "Demo HTTP traffic to ALB."
+  description       = "HTTP al ALB; redirige a HTTPS cuando hay un certificado ACM configurado."
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "tcp"
   from_port         = 80
   to_port           = 80
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  count             = var.alb_certificate_arn == "" ? 0 : 1
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS publico del ERP con certificado ACM."
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
@@ -585,6 +595,29 @@ resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.web.arn
   port              = 80
   protocol          = "HTTP"
+
+  default_action {
+    type             = var.alb_certificate_arn == "" ? "forward" : "redirect"
+    target_group_arn = var.alb_certificate_arn == "" ? aws_lb_target_group.web.arn : null
+
+    dynamic "redirect" {
+      for_each = var.alb_certificate_arn == "" ? [] : [1]
+      content {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = var.alb_certificate_arn == "" ? 0 : 1
+  load_balancer_arn = aws_lb.web.arn
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = var.alb_certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
 
   default_action {
     type             = "forward"

@@ -68,6 +68,17 @@ variable "erp_image" {
   }
 }
 
+variable "alb_certificate_arn" {
+  description = "ARN de un certificado ACM validado para un dominio propio. Si se configura, el ALB habilita HTTPS y redirige HTTP a HTTPS."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alb_certificate_arn == "" || can(regex("^arn:[^:]+:acm:[^:]+:[0-9]{12}:certificate/[0-9a-fA-F-]+$", var.alb_certificate_arn))
+    error_message = "alb_certificate_arn debe estar vacío o ser un ARN de certificado ACM."
+  }
+}
+
 variable "azure_vpn_private_ip" {
   description = "IP privada de la VM Azure WireGuard usada para permitir sondeos."
   type        = string

@@ -4,6 +4,10 @@ Este repositorio contiene dos configuraciones Terraform independientes para desp
 
 > **Alcance de laboratorio académico.** El ERP es un MVP y el ALB sigue usando HTTP; no envíes credenciales por una red pública sin TLS. PostgreSQL, ambas VM VPN y el túnel WireGuard son puntos únicos de falla. No es una configuración lista para producción.
 
+### HTTPS del ERP
+
+El ALB admite HTTPS cuando `alb_certificate_arn` contiene el ARN de un certificado ACM validado para un dominio propio. Al configurarlo, Terraform abre TCP 443, reenvía el ERP por HTTPS y redirige HTTP a HTTPS. El DNS `*.elb.amazonaws.com` asignado por AWS no permite solicitar un certificado público para ese nombre: primero se necesita un dominio propio, un registro DNS apuntando al ALB y un certificado ACM validado en `us-east-1`. Sin ese valor, el laboratorio conserva HTTP para no bloquear los despliegues académicos; no se debe tratar como acceso seguro para usuarios reales.
+
 ## Arquitectura
 
 ![Infraestructura multicloud desplegada](docs/arquitectura-actual.png)
