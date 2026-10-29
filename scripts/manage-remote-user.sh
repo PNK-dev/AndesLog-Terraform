@@ -13,6 +13,9 @@ USERNAME="$2"
 case "$ACTION" in
   add)
     IFS= read -r PASSWORD
+    # PowerShell can send CRLF to the remote SSH process; `read` removes LF but
+    # leaves CR in the value, which would make the stored password unmatchable.
+    PASSWORD="${PASSWORD%$'\r'}"
     [[ "${#PASSWORD}" -ge 12 && "$PASSWORD" != *:* ]] || { echo "Password must be at least 12 characters and contain no colon" >&2; exit 2; }
     if id "$USERNAME" >/dev/null 2>&1; then
       id -nG "$USERNAME" | grep -qw andeslogvpn || { echo "Existing user is not a VPN user" >&2; exit 1; }

@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $env:TF_CLOUD_ORGANIZATION) { $env:TF_CLOUD_ORGANIZATION = $ExpectedHcpOrganization }
 if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { throw 'Falta OpenSSH en PATH.' }
+if (-not (Get-Command scp -ErrorAction SilentlyContinue)) { throw 'Falta scp en PATH.' }
 if (-not (Test-Path -LiteralPath $SshPrivateKey)) { throw "No existe la clave SSH $SshPrivateKey." }
 if (-not $AzureVpnIp) {
     $azureRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\environments\lab\azure'))
@@ -25,6 +26,13 @@ if ($AzureVpnIp -notmatch '^(?:\d{1,3}\.){3}\d{1,3}$') { throw 'AzureVpnIp debe 
 $target = "${AzureUser}@${AzureVpnIp}"
 $remoteAction = if ($Action -eq 'Add') { 'add' } else { 'disable' }
 $remoteCommand = "sudo /usr/local/sbin/andeslog-manage-user $remoteAction $Username"
+$helper = Join-Path $PSScriptRoot 'manage-remote-user.sh'
+if (-not (Test-Path -LiteralPath $helper)) { throw "No se encontró el helper $helper." }
+$remoteHelper = "/tmp/andeslog-manage-user-$Username.sh"
+& scp -i $SshPrivateKey -o StrictHostKeyChecking=accept-new $helper "${target}:$remoteHelper"
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo copiar el helper de administración VPN al servidor.' }
+& ssh -i $SshPrivateKey -o StrictHostKeyChecking=accept-new $target "sudo install -o root -g root -m 0750 $remoteHelper /usr/local/sbin/andeslog-manage-user && rm -f $remoteHelper"
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo instalar el helper de administración VPN en el servidor.' }
 
 if ($Action -eq 'Disable') {
     & ssh -i $SshPrivateKey -o StrictHostKeyChecking=accept-new $target $remoteCommand
