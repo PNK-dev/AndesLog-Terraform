@@ -16,7 +16,7 @@ param(
     [string]$SshPrivateKey = "$env:USERPROFILE\.ssh\id_ed25519",
     [string]$AzureUser = 'azureuser',
     [string]$ErpDirectory = '',
-    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.0.0',
+    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.1.0',
     [switch]$EnableBackupAudit,
     [switch]$EnableRemoteAccess
 )
@@ -86,6 +86,7 @@ function ReadJson([string]$path) {
 }
 $script:backupAuditRequested = $EnableBackupAudit -or ([bool](ReadJson $azureOverlay)['enable_backup_audit'])
 $script:remoteAccessRequested = $EnableRemoteAccess -or ([bool](ReadJson $azureOverlay)['enable_remote_access'])
+$script:backupAuditPublished = $false
 function RandomSecret {
     $bytes = New-Object byte[] 36
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -197,9 +198,9 @@ function UpdateOverlays([string]$azureIp, [string]$azureKey, [string]$awsIp, [bo
     $az['aws_peer_public_cidr'] = if ($awsIp) { "$awsIp/32" } else { '' }
     $az['enable_backup_audit'] = $script:backupAuditRequested
     $az['enable_remote_access'] = $script:remoteAccessRequested
-    if (-not $az.ContainsKey('enable_backup_event_subscription')) {
-        $az['enable_backup_event_subscription'] = $false
-    }
+    # Event Grid validates that the function endpoint already exists. Keep its
+    # subscription off until DeployBackupAudit has published the function code.
+    $az['enable_backup_event_subscription'] = $script:backupAuditRequested -and $script:backupAuditPublished
     SaveJson $azureOverlay $az
     $aw = ReadJson $awsOverlay
     $aw['admin_public_cidr'] = $AdminPublicCidr
@@ -237,6 +238,7 @@ function DeployBackupAudit {
         Start-Sleep -Seconds 5
     }
     if (-not $published) { throw 'BackupAudit no apareció en Azure después de publicar el paquete; no se activó Event Grid.' }
+    $script:backupAuditPublished = $true
     $az = ReadJson $azureOverlay
     $az['enable_backup_event_subscription'] = $true
     SaveJson $azureOverlay $az
@@ -287,6 +289,31 @@ function PrepareSecrets([string]$dbIp) {
     [IO.File]::WriteAllText($secretPath, (($lines -join "`n") + "`n"), $utf8)
     return $dbPassword
 }
+function WriteWebServiceUnit {
+    $path = Join-Path $work 'andeslog-web.service'
+    $unit = @"
+[Unit]
+Description=AndesLog ERP container
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+ConditionPathExists=/etc/andeslog-app/erp.env
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f andeslog-erp
+ExecStart=/usr/bin/docker run --rm --name andeslog-erp --publish 8080:8000 --env-file /etc/andeslog-app/erp.env $ErpImage gunicorn --workers 2 --bind 0.0.0.0:8000 'app:create_app()'
+ExecStop=/usr/bin/docker stop --time 30 andeslog-erp
+ExecStopPost=-/usr/bin/docker rm -f andeslog-erp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"@
+    $unit = $unit.Replace([string][char]13 + [string][char]10, [string][char]10)
+    [IO.File]::WriteAllText($path, $unit, $utf8)
+    return $path
+}
 function BuildErp {
     Need 'docker'; Need 'ssh'; Need 'scp'
     if (-not $ErpDirectory -or -not (Test-Path -LiteralPath (Join-Path $ErpDirectory 'Dockerfile'))) {
@@ -312,6 +339,7 @@ function EnsureWebBootstrap([string]$hostName) {
 }
 function InstallErp([string]$dbPassword) {
     Say 'Configurando PostgreSQL y cargando ERP en ambas EC2.'
+    $serviceUnit = WriteWebServiceUnit
     Remote 'aws-db' 'cloud-init status --wait'
     if ($dbPassword -match '[\r\n\x00]') { throw 'La contraseña PostgreSQL existente contiene un salto de línea o NUL.' }
     $sqlPassword = $dbPassword.Replace("'", "''")
@@ -334,6 +362,8 @@ SELECT 'CREATE DATABASE andeslog OWNER andeslog_app' WHERE NOT EXISTS (SELECT 1 
         Remote $hostName 'sudo docker load -i /home/ubuntu/andeslog-erp.tar && rm -f /home/ubuntu/andeslog-erp.tar'
         Upload $secretPath $hostName '/home/ubuntu/.andeslog-erp.env'
         Remote $hostName 'chmod 600 /home/ubuntu/.andeslog-erp.env && sudo install -o root -g root -m 0600 /home/ubuntu/.andeslog-erp.env /etc/andeslog-app/erp.env && rm -f /home/ubuntu/.andeslog-erp.env'
+        Upload $serviceUnit $hostName '/home/ubuntu/andeslog-web.service'
+        Remote $hostName 'sudo install -o root -g root -m 0644 /home/ubuntu/andeslog-web.service /etc/systemd/system/andeslog-web.service && sudo systemctl daemon-reload && rm -f /home/ubuntu/andeslog-web.service'
     }
     Remote 'aws-web-a' "sudo docker run --rm --env-file /etc/andeslog-app/erp.env $ErpImage flask --app app:create_app db upgrade"
     Remote 'aws-web-a' "sudo docker run --rm --env-file /etc/andeslog-app/erp.env $ErpImage flask --app app:create_app seed-admin"

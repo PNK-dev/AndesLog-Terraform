@@ -463,7 +463,12 @@ resource "aws_instance" "web" {
   user_data = templatefile("${path.module}/../../../scripts/aws-web-cloud-init.sh.tftpl", {
     erp_image = var.erp_image
   })
-  user_data_replace_on_change = true
+
+  # Bootstrap runs once on creation; version updates are rolled out by lab.ps1
+  # over SSH so a tag change never stops or replaces both web instances.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   root_block_device {
     volume_size           = 16
