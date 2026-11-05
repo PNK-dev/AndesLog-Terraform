@@ -10,11 +10,17 @@ El ALB admite HTTPS cuando `alb_certificate_arn` contiene el ARN de un certifica
 
 ## Arquitectura
 
+### Diseño definido en Terraform
+
+El diagrama y el inventario actuales del código, incluidas las extensiones opcionales, están en [Arquitectura Terraform](docs/ARQUITECTURA_TERRAFORM.md) y [su diagrama SVG](docs/arquitectura-terraform.svg). Este diseño no afirma que los recursos estén activos ahora; el estado se consulta en HCP Terraform.
+
+### Último despliegue documentado
+
 ![Infraestructura multicloud desplegada](docs/arquitectura-actual.png)
 
 [Diagrama vectorial SVG](docs/arquitectura-actual.svg) · [Documentación rápida del despliegue actual](docs/ARQUITECTURA_DESPLEGADA.md)
 
-El diagrama refleja el despliegue verificado el 15 de octubre de 2026. Los respaldos se generan y cargan manualmente siguiendo el procedimiento de este README.
+La documentación de despliegue refleja una verificación histórica del 15 de octubre de 2026; no debe usarse para inferir el inventario activo de hoy. Los respaldos se generan y cargan manualmente siguiendo el procedimiento de este README.
 
 ## Recursos que administra cada estado
 
@@ -37,6 +43,16 @@ Las alarmas se crean sin SNS ni Action Group: se consultan en CloudWatch/Azure M
 
 Las cuatro instancias `t3.micro` de AWS consumen juntas 8 vCPU: cada `t3.micro` tiene 2 vCPU según la tabla oficial de EC2. Revisa la cuota vigente del laboratorio antes de desplegar. Las subredes usan `10.10.0.0/16` en AWS y `10.20.0.0/16` en Azure; no las cambies sin actualizar también las rutas, reglas y scripts WireGuard. [Referencia AWS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-t3.html)
 
+## Prueba de carga controlada
+
+Desde esta carpeta, ejecuta una única prueba limitada a 300 solicitudes GET:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\load-test.ps1
+```
+
+El script obtiene el DNS del ALB desde el workspace AWS de HCP Terraform y consulta `/api/health`: 60 solicitudes con intervalo de 1 segundo y luego 240 con intervalo de 500 ms. Usa un solo flujo secuencial y no modifica datos. Se detiene ante respuestas distintas de HTTP 200, un cuerpo de salud inválido, fallos de red o una respuesta superior a 2 segundos. `terraform` debe estar instalado y autenticado en HCP Terraform. Esta prueba mide la ruta web y el endpoint de salud; ese endpoint no consulta PostgreSQL.
+
 ## Estructura
 
 ```text
@@ -52,7 +68,7 @@ README.md
 
 Terraform y ERP son dos repositorios independientes. Publica cada cambio estable con un tag Git `vMAJOR.MINOR.PATCH` en su repositorio; conserva los tags publicados sin moverlos. Al desplegar, usa un tag de Terraform y un tag del ERP conocidos y registra esa pareja en el mensaje del tag anotado de Terraform. La rama `main` sirve para desarrollo y puede cambiar entre equipos.
 
-`lab.ps1` construye el ERP desde la carpeta hermana y etiqueta la imagen Docker localmente. El valor de `-ErpImage` debe corresponder al tag Git que hayas seleccionado en el ERP; no hace falta publicar la imagen en GHCR para este flujo. El valor predeterminado actual es `ghcr.io/pnk-dev/andeslog-erp:v1.0.0`, así que pásalo explícitamente cuando uses otra versión.
+`lab.ps1` construye el ERP desde la carpeta hermana y etiqueta la imagen Docker localmente. El valor de `-ErpImage` debe corresponder al tag Git que hayas seleccionado en el ERP; no hace falta publicar la imagen en GHCR para este flujo. El valor predeterminado actual es `ghcr.io/pnk-dev/andeslog-erp:v1.1.0`, así que pásalo explícitamente cuando uses otra versión.
 
 Para preparar una versión, termina y publica los commits de ambos repositorios, crea los tags en cada uno y súbelos. Por ejemplo, desde la carpeta que contiene ambos repositorios:
 

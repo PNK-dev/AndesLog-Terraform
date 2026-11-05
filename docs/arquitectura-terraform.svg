@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitectura multicloud AndesLog definida en Terraform</title>
+  <desc id="desc">Diagrama de los recursos del laboratorio AWS y Azure, túnel WireGuard entre nubes y extensiones opcionales.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#425466"/></marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="arrowBoth" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <style>
+      text { font-family: Segoe UI, Arial, sans-serif; fill: #172033; }
+      .title { font-size: 30px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #516174; }
+      .cloudtitle { font-size: 22px; font-weight: 700; fill: #fff; }
+      .cloudsub { font-size: 13px; fill: #e7eef8; }
+      .section { font-size: 13px; font-weight: 700; letter-spacing: .7px; fill: #53657a; }
+      .label { font-size: 15px; font-weight: 700; }
+      .small { font-size: 12px; fill: #425466; }
+      .tiny { font-size: 11px; fill: #53657a; }
+      .card { fill: #fff; stroke: #b9c5d3; stroke-width: 1.5; rx: 12; }
+      .awsCard { fill: #fffaf0; stroke: #e6a23c; stroke-width: 1.5; rx: 12; }
+      .azureCard { fill: #f2f8ff; stroke: #4592df; stroke-width: 1.5; rx: 12; }
+      .optional { fill: #fff; stroke: #667085; stroke-width: 1.5; stroke-dasharray: 7 5; rx: 12; }
+      .line { fill: none; stroke: #425466; stroke-width: 2; marker-end: url(#arrow); }
+      .tunnel { fill: none; stroke: #7c3aed; stroke-width: 3; stroke-dasharray: 10 6; marker-start: url(#arrowBoth); marker-end: url(#arrowBoth); }
+    </style>
+  </defs>
+  <rect width="1600" height="1180" fill="#f5f7fb"/>
+  <text x="50" y="45" class="title">AndesLog · arquitectura multicloud definida en Terraform</text>
+  <text x="50" y="70" class="subtitle">Diagrama del código versionado · región AWS us-east-1 · Azure chilecentral · extensiones opcionales marcadas con borde discontinuo</text>
+
+  <!-- Provider panels -->
+  <rect x="35" y="95" width="745" height="990" rx="18" fill="#fff" stroke="#e6a23c" stroke-width="2"/>
+  <path d="M53 95 H762 Q780 95 780 113 V158 H35 V113 Q35 95 53 95" fill="#25364a"/>
+  <text x="60" y="126" class="cloudtitle">AWS · VPC AndesLog</text>
+  <text x="60" y="148" class="cloudsub">10.10.0.0/16 · seis subredes · us-east-1</text>
+
+  <rect x="820" y="95" width="745" height="990" rx="18" fill="#fff" stroke="#4592df" stroke-width="2"/>
+  <path d="M838 95 H1547 Q1565 95 1565 113 V158 H820 V113 Q820 95 838 95" fill="#25364a"/>
+  <text x="845" y="126" class="cloudtitle">Azure · Resource Group AndesLog</text>
+  <text x="845" y="148" class="cloudsub">VNet 10.20.0.0/16 · chilecentral</text>
+
+  <!-- AWS traffic lines behind cards -->
+  <path d="M390 258 V290 H230 V320" class="line"/>
+  <path d="M390 290 H565 V320" class="line"/>
+  <path d="M230 410 V448 H390 V475" class="line"/>
+  <path d="M565 410 V448 H390" fill="none" stroke="#425466" stroke-width="2"/>
+  <path d="M390 570 V615" class="line"/>
+  <path d="M390 745 V780" class="line"/>
+
+  <!-- AWS -->
+  <text x="65" y="184" class="section">ENTRADA PÚBLICA · SUBREDES PÚBLICAS 10.10.1.0/24 Y 10.10.2.0/24</text>
+  <rect x="285" y="198" width="210" height="60" class="awsCard"/>
+  <text x="390" y="222" text-anchor="middle" class="label">Application Load Balancer</text>
+  <text x="390" y="243" text-anchor="middle" class="small">HTTP :80 · HTTPS opcional con ACM</text>
+  <text x="66" y="231" class="small">Internet</text>
+  <path d="M125 228 H278" class="line"/>
+  <text x="66" y="270" class="tiny">Internet Gateway</text>
+
+  <text x="65" y="306" class="section">CAPA WEB · SUBREDES PRIVADAS DE APLICACIÓN</text>
+  <rect x="105" y="320" width="250" height="90" class="awsCard"/>
+  <text x="230" y="347" text-anchor="middle" class="label">EC2 web-a</text>
+  <text x="230" y="369" text-anchor="middle" class="small">10.10.11.10 · Docker ERP · :8080</text>
+  <text x="230" y="390" text-anchor="middle" class="tiny">ALB health check: /api/health</text>
+  <rect x="440" y="320" width="250" height="90" class="awsCard"/>
+  <text x="565" y="347" text-anchor="middle" class="label">EC2 web-b</text>
+  <text x="565" y="369" text-anchor="middle" class="small">10.10.12.10 · Docker ERP · :8080</text>
+  <text x="565" y="390" text-anchor="middle" class="tiny">ALB distribuye tráfico entre ambas</text>
+
+  <text x="65" y="457" class="section">CAPA DE DATOS · SUBRED PRIVADA 10.10.21.0/24</text>
+  <rect x="260" y="475" width="260" height="95" class="awsCard"/>
+  <text x="390" y="503" text-anchor="middle" class="label">EC2 PostgreSQL</text>
+  <text x="390" y="525" text-anchor="middle" class="small">10.10.21.10 · puerto 5432</text>
+  <text x="390" y="547" text-anchor="middle" class="small">EBS gp3 cifrado · datos 20 GiB</text>
+  <text x="535" y="505" class="tiny">Subred data-b</text>
+  <text x="535" y="522" class="tiny">10.10.22.0/24</text>
+  <text x="535" y="539" class="tiny">reservada, sin instancia</text>
+
+  <text x="65" y="605" class="section">CONECTIVIDAD MULTICLOUD</text>
+  <rect x="250" y="615" width="280" height="130" class="awsCard"/>
+  <text x="390" y="642" text-anchor="middle" class="label">EC2 WireGuard AWS</text>
+  <text x="390" y="665" text-anchor="middle" class="small">Subred pública · UDP 51820</text>
+  <text x="390" y="687" text-anchor="middle" class="small">peer + salto SSH administrativo</text>
+  <text x="390" y="715" text-anchor="middle" class="tiny">Elastic IP desactivada por defecto</text>
+
+  <text x="65" y="775" class="section">RED, SEGURIDAD Y OPERACIÓN</text>
+  <rect x="65" y="792" width="320" height="105" class="card"/>
+  <text x="85" y="819" class="label">VPC, rutas y Security Groups</text>
+  <text x="85" y="843" class="small">ALB → web :8080 · web → DB :5432</text>
+  <text x="85" y="864" class="small">SSH/WireGuard restringidos por CIDR/peer</text>
+  <text x="85" y="884" class="tiny">Rutas a Azure desde web; DB opcional</text>
+  <rect x="405" y="792" width="320" height="105" class="card"/>
+  <text x="425" y="819" class="label">CloudWatch</text>
+  <text x="425" y="843" class="small">Dashboard · alarmas CPU para 4 EC2</text>
+  <text x="425" y="864" class="small">Alarma por destinos ALB no saludables</text>
+  <text x="425" y="884" class="tiny">No se configura notificación SNS</text>
+
+  <rect x="65" y="920" width="660" height="115" class="optional"/>
+  <text x="85" y="948" class="label">Opcionales de AWS</text>
+  <text x="85" y="972" class="small">NAT Gateway temporal para bootstrap; el script lo elimina al terminar.</text>
+  <text x="85" y="994" class="small">S3 privado para backups (apagado por defecto en AWS Academy).</text>
+  <text x="85" y="1016" class="small">HTTPS ACM, Elastic IP VPN y ruta de DB a Azure, si se configuran.</text>
+
+  <!-- Azure lines behind cards -->
+  <path d="M1180 745 V780" class="line"/>
+  <path d="M1080 530 V555" class="line"/>
+  <path d="M1350 530 V555" class="line"/>
+
+  <!-- Azure -->
+  <text x="850" y="184" class="section">RED CORPORATIVA · SUBRED VPN 10.20.1.0/24</text>
+  <rect x="1035" y="615" width="290" height="130" class="azureCard"/>
+  <text x="1180" y="642" text-anchor="middle" class="label">VM Linux WireGuard</text>
+  <text x="1180" y="665" text-anchor="middle" class="small">10.20.1.10 · IP pública estática</text>
+  <text x="1180" y="687" text-anchor="middle" class="small">NIC con IP forwarding · UDP 51820</text>
+  <text x="1180" y="715" text-anchor="middle" class="tiny">OpenVPN UDP 1194 opcional para clientes</text>
+
+  <text x="850" y="235" class="section">SERVICIOS DE DATOS Y RESPALDO</text>
+  <rect x="855" y="255" width="300" height="120" class="azureCard"/>
+  <text x="1005" y="283" text-anchor="middle" class="label">Storage Account · Blob</text>
+  <text x="1005" y="306" text-anchor="middle" class="small">Contenedor privado `backups`</text>
+  <text x="1005" y="328" text-anchor="middle" class="small">TLS 1.2 · HTTPS · sin acceso anónimo</text>
+  <text x="1005" y="352" text-anchor="middle" class="tiny">Destino de backup; no programa pg_dump</text>
+
+  <rect x="1200" y="255" width="320" height="120" class="card"/>
+  <text x="1360" y="283" text-anchor="middle" class="label">Azure Monitor</text>
+  <text x="1360" y="307" text-anchor="middle" class="small">Alerta CPU de la VM VPN</text>
+  <text x="1360" y="331" text-anchor="middle" class="small">Promedio &gt;70% por cinco minutos</text>
+  <text x="1360" y="353" text-anchor="middle" class="tiny">Sin Action Group configurado</text>
+
+  <text x="850" y="405" class="section">EXTENSIONES OPCIONALES · DESACTIVADAS EN LOS VALORES DE EJEMPLO</text>
+  <rect x="855" y="425" width="300" height="105" class="optional"/>
+  <text x="1005" y="452" text-anchor="middle" class="label">Azure Files · Storage Account SMB</text>
+  <text x="1005" y="475" text-anchor="middle" class="small">Share `andeslog` · cuota predeterminada 10 GiB</text>
+  <text x="1005" y="497" text-anchor="middle" class="small">Private Endpoint + DNS privado</text>
+  <text x="1005" y="518" text-anchor="middle" class="tiny">Acceso público deshabilitado; vía VPN</text>
+
+  <rect x="1200" y="425" width="320" height="105" class="optional"/>
+  <text x="1360" y="452" text-anchor="middle" class="label">Azure Functions · BackupAudit</text>
+  <text x="1360" y="475" text-anchor="middle" class="small">Flex Consumption · Python 3.12 · host Storage</text>
+  <text x="1360" y="497" text-anchor="middle" class="small">Event Grid → BlobCreated → Function</text>
+  <text x="1360" y="518" text-anchor="middle" class="tiny">Managed Identity/RBAC → contenedor de auditoría</text>
+
+  <text x="850" y="775" class="section">SEGURIDAD, RUTAS Y ADMINISTRACIÓN</text>
+  <rect x="855" y="792" width="665" height="105" class="card"/>
+  <text x="875" y="819" class="label">VNet, NSG y Route Table</text>
+  <text x="875" y="843" class="small">Tránsito a las subredes web AWS por WireGuard; tráfico permitido explícitamente.</text>
+  <text x="875" y="865" class="small">SSH administrativo opcional por CIDR /32 · autenticación de VM con clave pública.</text>
+  <text x="875" y="885" class="tiny">Subred privada 10.20.11.0/24 aloja Private Endpoint si Azure Files está activado.</text>
+
+  <rect x="855" y="920" width="665" height="115" class="card"/>
+  <text x="875" y="948" class="label">Almacenamiento y operación</text>
+  <text x="875" y="972" class="small">Blob y Azure Files son cuentas/servicios distintos; Files no es el contenedor de backups.</text>
+  <text x="875" y="994" class="small">Backups se suben mediante procedimiento manual; auditoría automática es una extensión.</text>
+  <text x="875" y="1016" class="small">Grupo de recursos: andeslog-lab-rg (nombre compuesto por project + environment).</text>
+
+  <!-- Cross-cloud tunnel -->
+  <path d="M530 680 C680 680 850 680 1035 680" class="tunnel"/>
+  <rect x="650" y="635" width="260" height="52" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="780" y="657" text-anchor="middle" class="label" fill="#5b21b6">Túnel WireGuard</text>
+  <text x="780" y="677" text-anchor="middle" class="small">UDP 51820 · rutas privadas entre VPC y VNet</text>
+
+  <!-- Legend -->
+  <rect x="35" y="1100" width="1530" height="55" rx="12" fill="#fff" stroke="#d5dde7"/>
+  <line x1="65" y1="1127" x2="120" y2="1127" stroke="#425466" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="132" y="1132" class="small">Flujo de aplicación o ruta</text>
+  <line x1="355" y1="1127" x2="410" y2="1127" stroke="#7c3aed" stroke-width="3" stroke-dasharray="8 5" marker-start="url(#arrowBoth)" marker-end="url(#arrowBoth)"/>
+  <text x="422" y="1132" class="small">Túnel entre nubes</text>
+  <rect x="610" y="1113" width="38" height="27" class="optional"/>
+  <text x="660" y="1132" class="small">Recurso opcional</text>
+  <text x="960" y="1132" class="small">Los detalles desplegados dependen de los flags y overlays de cada ejecución.</text>
+</svg>
