@@ -913,6 +913,10 @@ function Deploy {
             $existingRuntime = $null
             try {
                 $existingRuntime = Get-AndeslogRuntimeSecretString $existingRuntimeArn
+                if (-not (Test-Path -LiteralPath $secretPath)) {
+                    Restore-AndeslogRuntimeSecret $secretPath $existingRuntime
+                    Say 'Se recuperó el secreto ERP existente en un archivo local privado; no se muestra su contenido.'
+                }
                 Assert-AndeslogRuntimeConsistency $secretPath $existingRuntime
             } finally { $existingRuntime = $null }
         }

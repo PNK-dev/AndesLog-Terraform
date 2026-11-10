@@ -81,6 +81,22 @@ try {
     }
     Remove-Item -LiteralPath $path -Force
     Expect-Rejection $json
+    Restore-AndeslogRuntimeSecret $path $json
+    Assert-AndeslogRuntimeConsistency $path $json
+    $acl = Get-Acl -LiteralPath $path
+    if (-not $acl.AreAccessRulesProtected -or @($acl.Access | Where-Object { $_.IsInherited }).Count) { throw 'El secreto restaurado heredó permisos.' }
+    try { Restore-AndeslogRuntimeSecret $path $json; throw 'expected failure' } catch {
+        if ($_.Exception.Message -notmatch 'No se pudo recuperar') { throw }
+    }
+    Assert-AndeslogRuntimeConsistency $path $json
+    Remove-Item -LiteralPath $path -Force
+    $invalid = [ordered]@{}
+    foreach ($name in $values.Keys) { $invalid[$name] = $values[$name] }
+    $invalid['SECRET_KEY'] = "invalid`nline"
+    try { Restore-AndeslogRuntimeSecret $path ($invalid | ConvertTo-Json -Compress); throw 'expected failure' } catch {
+        if ($_.Exception.Message -notmatch 'No se pudo recuperar') { throw }
+    }
+    if (Test-Path -LiteralPath $path) { throw 'No debe quedar un archivo para un secreto inválido.' }
     Write-Host 'OK: credenciales existentes ausentes, incompatibles o duplicadas bloquean Deploy sin exponer secretos.'
 } finally {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }

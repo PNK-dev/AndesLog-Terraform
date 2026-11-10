@@ -54,6 +54,8 @@ En el mismo equipo, el script guarda estos ajustes locales para las ejecuciones 
 
 Espera a que termine la última fase y utiliza la URL del ERP que muestra el script. La contraseña inicial está en el archivo local `environments\lab\aws\andeslog.runtime.secret`; no lo compartas ni lo subas al repositorio. El primer despliegue puede tardar bastante por RDS y Azure VPN Gateway. Si una fase falla, se detiene y los recursos creados pueden seguir generando cargos: revisa el mensaje antes de reintentar o ejecuta la baja.
 
+Si la base sigue activa y operas desde otro clon sin ese archivo, `Deploy` intenta recuperar el secreto de ejecución existente de AWS Secrets Manager con la sesión autorizada, lo guarda localmente con permisos NTFS restringidos al usuario y comprueba su contenido. Si ya existe un archivo local diferente, se detiene sin sobrescribirlo. La recuperación requiere permisos `secretsmanager:GetSecretValue` sobre el secreto y no recupera información después de que se haya eliminado. Se ha probado localmente con secretos ficticios; aún falta probarla en una segunda máquina con recursos reales.
+
 Si el primer despliegue se interrumpe antes de inicializar el secreto del ERP, comprueba primero que la base sea nueva y no contenga datos que deban conservarse. Desde el mismo equipo y con su configuración local intacta puedes reanudar ese bootstrap agregando `-ResumeUninitializedBootstrap` al comando `Deploy` anterior. El script exige que el secreto aún no tenga versiones, que el ASG esté vacío y use la imagen inicial, y que la VM bootstrap siga habilitada. Estas comprobaciones no demuestran por sí solas que la base esté vacía; no uses esa opción para recuperar una base con datos existentes.
 
 Para una comprobación pequeña de disponibilidad y latencia:
@@ -106,7 +108,7 @@ Estas consultas no son un inventario completo de todos los servicios ni de copia
 - **AWS:** ALB, ASG con dos nodos, dos zonas, RDS Multi-AZ y CloudWatch. La entrada del laboratorio es HTTP, no apta para credenciales de producción.
 - **Azure:** VPN P2S, Private Endpoint de Files, share corporativo, Function de eventos y Blob. El ERP envía eventos de negocio a Azure mediante HTTPS/HMAC y outbox.
 - **Conectividad entre nubes:** `-SkipIntercloudVpn` omite el túnel privado porque AWS Academy denegó `CreateCustomerGateway`. No presentar la integración HTTPS como una VPN entre nubes.
-- **Resiliencia:** se probaron anteriormente reemplazo de nodo y failover RDS por zona. La recuperación regional completa, el aislamiento de escritores y los objetivos RTO ≤30 min/RPO ≤5 min siguen sin demostrarse.
+- **Resiliencia:** se probó el reemplazo de un nodo web. RDS registró eventos de failover y el ERP volvió a responder, pero no se confirmó el cambio de zona durante la observación. La recuperación regional completa, el aislamiento de escritores y los objetivos RTO ≤30 min/RPO ≤5 min siguen sin demostrarse.
 - **Presupuesto:** el diseño de producción requiere capacidad redundante y cargos por uso; consulta [Presupuesto de producción](PRESUPUESTO_PRODUCCION.md), sin presentar el límite académico de USD 50 como costo de producción.
 
 Los detalles y el estado de las pruebas están en [RESILIENCIA.md](RESILIENCIA.md). Si el entorno se ha dado de baja, los resultados de demostraciones anteriores son históricos y deben repetirse para generar nuevas evidencias.

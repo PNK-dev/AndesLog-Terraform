@@ -58,3 +58,44 @@ function Get-AndeslogRuntimeSecretString([string]$SecretArn) {
         return [string]$response.SecretString
     } catch { throw 'No se pudo verificar el secreto activo de AWS; se detiene Deploy antes de modificar recursos.' }
 }
+
+function Restore-AndeslogRuntimeSecret([string]$Path, [string]$RemoteJson) {
+    # CreateNew refuses to overwrite an existing local file. Create a protected
+    # NTFS ACL before writing any secret bytes, and never echo values/errors.
+    $stream = $null
+    $created = $false
+    try {
+        $remote = $RemoteJson | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $remote -or $remote -is [array] -or $remote -is [string]) { throw 'invalid' }
+        $required = @('APP_ENV', 'SECRET_KEY', 'DATABASE_URL', 'BOOTSTRAP_ADMIN_USERNAME', 'BOOTSTRAP_ADMIN_PASSWORD')
+        $optional = @('ERP_AZURE_INGEST_URL', 'ERP_AZURE_INGEST_HMAC_SECRET', 'OUTBOX_POLL_SECONDS')
+        $lines = @()
+        foreach ($name in ($required + $optional)) {
+            $property = $remote.PSObject.Properties[$name]
+            if ($null -eq $property) {
+                if ($name -in $required) { throw 'invalid' }
+                continue
+            }
+            if ($property.Value -isnot [string] -or $property.Value -match '[\r\n\x00]' -or ($name -in $required -and -not $property.Value)) { throw 'invalid' }
+            $lines += "$name=$($property.Value)"
+        }
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl = New-Object Security.AccessControl.FileSecurity
+        $acl.SetOwner($sid)
+        $acl.SetAccessRuleProtection($true, $false)
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
+        $acl.AddAccessRule($rule)
+        $stream = New-Object IO.FileStream($Path, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+        $created = $true
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($lines -join "`n") + "`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush()
+        $stream.Dispose()
+        $stream = $null
+        Assert-AndeslogRuntimeConsistency $Path $RemoteJson
+    } catch {
+        if ($stream) { $stream.Dispose() }
+        if ($created) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+        throw 'No se pudo recuperar de forma segura el secreto ERP en este equipo; se detiene Deploy sin modificar la nube.'
+    }
+}
