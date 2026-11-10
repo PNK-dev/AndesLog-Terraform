@@ -191,6 +191,8 @@ El ejecutor no hace fencing, no demuestra que la base elegida incluya todas las 
 
 La referencia entregada, *Tangamandapio_arquitectura completa.pdf* (corte 2026-11-05), aporta patrones y resultados medidos, no evidencia de AndesLog. Incluye dos subnet routers por nube y un flujo WMS con Function/Queue/Blob; su prueba de router fue de proceso, no de zona/región, y su observación 2→3 EC2 no demuestra capacidad para 3,000 usuarios. AndesLog debe repetir cada prueba contra sus propios recursos y registrar interrupción, p95/p99, errores y resultado de recuperación.
 
+El ERP limita a cinco segundos por host los nuevos intentos de conexión PostgreSQL salvo que la URL indique otro valor. En una prueba local con un servidor que acepta TCP pero no completa el protocolo, readiness respondió `503` dentro del límite de prueba. Esto facilita detectar una dependencia inaccesible, pero no limita consultas ya iniciadas, el tiempo de DNS ni garantiza por sí solo el RTO. Referencia: [PostgreSQL libpq](https://www.postgresql.org/docs/current/libpq-connect.html).
+
 ## Estado desplegado y validaciones
 
 **Evidencia histórica; corte: 2026-11-09.** Los valores y recursos siguientes corresponden a ese corte y no describen necesariamente el estado actual. El 10 de noviembre se interrumpió una baja después de que AWS aceptara eliminar RDS y NAT.

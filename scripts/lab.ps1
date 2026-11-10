@@ -17,7 +17,7 @@ param(
     [string]$AzureUser = 'azureuser',
     [string]$AzureFilesDrLocation = 'mexicocentral',
     [string]$ErpDirectory = '',
-    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.2.0',
+    [string]$ErpImage = 'ghcr.io/pnk-dev/andeslog-erp:v1.2.1',
     [string]$WebInstanceProfileName = '',
     [string]$RdsExternalMasterSecretArn = '',
     [string]$RdsExternalRotationLambdaArn = '',
