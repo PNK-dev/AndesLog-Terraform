@@ -1,5 +1,6 @@
 # Terraform working data and local state
 .terraform/
+.lab-runtime/
 **/.terraform/*
 *.tfstate
 *.tfstate.*
@@ -30,7 +31,14 @@ id_dsa
 *.pfx
 *.secret
 *.secrets
+.pgpass
+pgpass.conf
+.pg_service.conf
+pg_service.conf
 .lab-runtime/
+tmp/
+__pycache__/
+*.py[cod]
 
 # Editor / OS noise
 .DS_Store

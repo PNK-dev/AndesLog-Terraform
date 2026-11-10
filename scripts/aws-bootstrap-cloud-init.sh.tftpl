@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/andeslog-bootstrap-vm.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::Retries "3";' >> /etc/apt/apt.conf.d/99force-ipv4
+apt-get -o Acquire::ForceIPv4=true update -y
+apt-get -o Acquire::ForceIPv4=true install -y ca-certificates curl docker.io postgresql-client
+systemctl enable --now docker
+
+curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+  --output /etc/ssl/certs/aws-rds-global-bundle.pem
+chmod 0644 /etc/ssl/certs/aws-rds-global-bundle.pem
+echo 'Bootstrap tools and RDS CA are ready.' > /var/log/andeslog-bootstrap-ready.txt

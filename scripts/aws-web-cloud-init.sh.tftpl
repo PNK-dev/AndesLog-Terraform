@@ -6,30 +6,50 @@ export DEBIAN_FRONTEND=noninteractive
 echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
 echo 'Acquire::Retries "3";' >> /etc/apt/apt.conf.d/99force-ipv4
 apt-get -o Acquire::ForceIPv4=true update -y
-apt-get -o Acquire::ForceIPv4=true install -y docker.io
+apt-get -o Acquire::ForceIPv4=true install -y ca-certificates curl docker.io python3 unzip
 systemctl enable --now docker
 
-# Pull the image when the registry permits anonymous access. For a private GHCR
-# package, the image can be loaded from a verified archive without copying a PAT
-# onto the EC2 instance. Continue bootstrap so the service unit is ready.
-if ! docker image inspect "${erp_image}" >/dev/null 2>&1; then
-  if ! docker pull "${erp_image}"; then
-    echo "ERP image pull failed; load ${erp_image} with docker load before starting the service." >&2
-  fi
-fi
+# Install AWS CLI v2 from the official AWS distribution; Ubuntu Noble does not
+# provide the awscli package in every configured mirror/repository snapshot.
+curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+  https://awscli.amazonaws.com/v2/install.sh | bash -s -- --system
+aws --version
 
-install -d -o root -g root -m 0755 /etc/andeslog-app
+# Validate PostgreSQL TLS using the AWS RDS public CA bundle.
+curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+  "${rds_ca_bundle_url}" --output /etc/ssl/certs/aws-rds-global-bundle.pem
+chmod 0644 /etc/ssl/certs/aws-rds-global-bundle.pem
+
+# Runtime credentials are fetched through the EC2 instance role; they are never
+# embedded in user data, Terraform configuration, or the machine image.
+aws ecr get-login-password --region "${aws_region}" \
+  | docker login --username AWS --password-stdin "${ecr_registry}"
+install -m 0600 /dev/null /run/andeslog-runtime.json
+aws secretsmanager get-secret-value \
+  --region "${aws_region}" \
+  --secret-id "${erp_runtime_secret_arn}" \
+  --query SecretString --output text --no-cli-pager > /run/andeslog-runtime.json
+
+install -d -o root -g root -m 0755 /usr/local/sbin
+printf '%s' '${prepare_runtime_script_b64}' | base64 -d > /usr/local/sbin/andeslog-prepare-runtime.py
+chmod 0750 /usr/local/sbin/andeslog-prepare-runtime.py
+python3 /usr/local/sbin/andeslog-prepare-runtime.py \
+  --source /run/andeslog-runtime.json \
+  --destination /etc/andeslog-app/erp.env \
+  --database-host '${database_host_override}'
+
+docker pull "${erp_image}"
+
 cat > /etc/systemd/system/andeslog-web.service <<'UNIT'
 [Unit]
 Description=AndesLog ERP container
 After=docker.service network-online.target
 Wants=docker.service network-online.target
-ConditionPathExists=/etc/andeslog-app/erp.env
 
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/docker rm -f andeslog-erp
-ExecStart=/usr/bin/docker run --rm --name andeslog-erp --publish 8080:8000 --env-file /etc/andeslog-app/erp.env ${erp_image} gunicorn --workers 2 --bind 0.0.0.0:8000 'app:create_app()'
+ExecStart=/usr/bin/docker run --rm --name andeslog-erp --publish 8080:8000 --env-file /etc/andeslog-app/erp.env --volume /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro ${erp_image} gunicorn --workers 2 --bind 0.0.0.0:8000 'app:create_app()'
 ExecStop=/usr/bin/docker stop --time 30 andeslog-erp
 ExecStopPost=-/usr/bin/docker rm -f andeslog-erp
 Restart=always
@@ -39,6 +59,33 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
+install -d -o root -g root -m 0755 /usr/local/sbin
+printf '%s' '${dump_script_b64}' | base64 -d > /usr/local/sbin/andeslog-rds-dump
+chmod 0750 /usr/local/sbin/andeslog-rds-dump
 systemctl daemon-reload
-systemctl enable andeslog-web.service
-echo "ERP service prepared for ${erp_image}. Ensure the image is loaded, create /etc/andeslog-app/erp.env, run the one-time DB migration, then start andeslog-web.service." > /var/log/andeslog-web-setup.txt
+systemctl enable --now andeslog-web.service
+
+if [ "${enable_erp_integration}" = "true" ]; then
+  cat > /etc/systemd/system/andeslog-outbox.service <<'UNIT'
+[Unit]
+Description=AndesLog transactional outbox delivery worker
+After=docker.service network-online.target andeslog-web.service
+Wants=docker.service network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f andeslog-outbox
+ExecStart=/usr/bin/docker run --rm --name andeslog-outbox --env-file /etc/andeslog-app/erp.env --volume /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro ${erp_image} python -m app.outbox_worker
+ExecStop=/usr/bin/docker stop --time 30 andeslog-outbox
+ExecStopPost=-/usr/bin/docker rm -f andeslog-outbox
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now andeslog-outbox.service
+fi
+
+echo "ERP image ${erp_image} started from the ECR launch template." > /var/log/andeslog-web-setup.txt

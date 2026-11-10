@@ -6,13 +6,14 @@ locals {
 # The Functions host needs its own storage. The backup account deliberately has
 # shared keys disabled; the function accesses it only through managed identity.
 resource "azurerm_storage_account" "function_host" {
-  count                           = var.enable_backup_audit ? 1 : 0
-  name                            = local.function_host_name
-  resource_group_name             = azurerm_resource_group.main.name
-  location                        = var.backup_function_location
-  account_kind                    = "StorageV2"
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
+  count               = var.enable_backup_audit ? 1 : 0
+  name                = local.function_host_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = var.backup_function_location
+  account_kind        = "StorageV2"
+  account_tier        = "Standard"
+  # Zone-redundant Flex Consumption requires its host storage to use ZRS.
+  account_replication_type        = "ZRS"
   min_tls_version                 = "TLS1_2"
   https_traffic_only_enabled      = true
   allow_nested_items_to_be_public = false
@@ -57,7 +58,9 @@ resource "azurerm_service_plan" "backup_audit" {
   location            = var.backup_function_location
   os_type             = "Linux"
   sku_name            = "FC1"
-  tags                = merge(local.common_tags, { Purpose = "backup-audit" })
+  # Flex Consumption spreads the app across availability zones in supported regions.
+  zone_balancing_enabled = true
+  tags                   = merge(local.common_tags, { Purpose = "backup-audit" })
 }
 
 resource "azurerm_function_app_flex_consumption" "backup_audit" {

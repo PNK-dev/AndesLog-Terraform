@@ -11,18 +11,22 @@ locals {
   }
 
   subnet_definitions = {
-    public-a = { cidr = "10.10.1.0/24", az_index = 0, public = true, purpose = "alb-vpn" }
+    public-a = { cidr = "10.10.1.0/24", az_index = 0, public = true, purpose = "alb" }
     public-b = { cidr = "10.10.2.0/24", az_index = 1, public = true, purpose = "alb" }
     app-a    = { cidr = "10.10.11.0/24", az_index = 0, public = false, purpose = "web" }
     app-b    = { cidr = "10.10.12.0/24", az_index = 1, public = false, purpose = "web" }
     data-a   = { cidr = "10.10.21.0/24", az_index = 0, public = false, purpose = "database" }
-    data-b   = { cidr = "10.10.22.0/24", az_index = 1, public = false, purpose = "reserved" }
+    data-b   = { cidr = "10.10.22.0/24", az_index = 1, public = false, purpose = "database" }
   }
 
   public_subnets  = { for name, cfg in local.subnet_definitions : name => cfg if cfg.public }
   private_subnets = { for name, cfg in local.subnet_definitions : name => cfg if !cfg.public }
-  app_subnets     = { for name, cfg in local.subnet_definitions : name => cfg if startswith(name, "app-") }
-  db_subnet_names = { "data-a" = local.subnet_definitions["data-a"] }
+  app_subnets = {
+    for name, cfg in local.subnet_definitions : name => merge(cfg, {
+      nat_subnet = "public-${substr(name, 4, 1)}"
+    }) if startswith(name, "app-")
+  }
+  db_subnet_names = { for name, cfg in local.subnet_definitions : name => cfg if startswith(name, "data-") }
   key_name = var.existing_key_name != "" ? var.existing_key_name : (
     var.ssh_public_key != "" ? aws_key_pair.admin[0].key_name : null
   )
@@ -59,6 +63,17 @@ data "aws_ami" "ubuntu_2404" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+data "aws_rds_orderable_db_instance" "main" {
+  engine                       = "postgres"
+  engine_version               = var.rds_engine_version
+  instance_class               = var.rds_instance_class
+  storage_type                 = "gp3"
+  supports_multi_az            = true
+  supports_storage_encryption  = true
+  supports_storage_autoscaling = true
+  vpc                          = true
 }
 
 resource "aws_key_pair" "admin" {
@@ -126,24 +141,26 @@ resource "aws_route_table_association" "private" {
 }
 
 resource "aws_eip" "temporary_nat" {
-  count  = var.enable_temporary_nat ? 1 : 0
-  domain = "vpc"
-  tags   = merge(local.common_tags, { Name = "${local.prefix}-temporary-nat-eip", Purpose = "temporary-bootstrap" })
+  for_each = var.enable_temporary_nat ? local.public_subnets : {}
+  domain   = "vpc"
+  tags     = merge(local.common_tags, { Name = "${local.prefix}-${each.key}-nat-eip", Purpose = "private-egress" })
 }
 
 resource "aws_nat_gateway" "temporary" {
-  count         = var.enable_temporary_nat ? 1 : 0
-  allocation_id = aws_eip.temporary_nat[0].id
-  subnet_id     = aws_subnet.this["public-a"].id
+  for_each      = var.enable_temporary_nat ? local.public_subnets : {}
+  allocation_id = aws_eip.temporary_nat[each.key].id
+  subnet_id     = aws_subnet.this[each.key].id
   depends_on    = [aws_internet_gateway.main]
-  tags          = merge(local.common_tags, { Name = "${local.prefix}-temporary-nat", Purpose = "temporary-bootstrap" })
+  tags          = merge(local.common_tags, { Name = "${local.prefix}-${each.key}-nat", Purpose = "private-egress" })
 }
 
 resource "aws_route" "temporary_nat_egress" {
-  for_each               = var.enable_temporary_nat ? local.private_subnets : {}
+  # Only application subnets need outbound access for image pulls and self-replacement.
+  # Database subnets remain isolated and have no Internet default route.
+  for_each               = var.enable_temporary_nat ? local.app_subnets : {}
   route_table_id         = aws_route_table.private[each.key].id
   destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.temporary[0].id
+  nat_gateway_id         = aws_nat_gateway.temporary[each.value.nat_subnet].id
 }
 
 resource "aws_security_group" "alb" {
@@ -160,7 +177,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "web" {
   name        = "${local.prefix}-sg-web"
-  description = "Web privada: entrada del ALB y de la VM VPN Azure."
+  description = "Web privada: entrada desde ALB y red corporativa por Site-to-Site VPN."
   vpc_id      = aws_vpc.main.id
   ingress     = []
   egress      = []
@@ -172,7 +189,7 @@ resource "aws_security_group" "web" {
 
 resource "aws_security_group" "db" {
   name        = "${local.prefix}-sg-db"
-  description = "PostgreSQL accessible only from Web and administration via VPN."
+  description = "RDS PostgreSQL is private and accepts connections only from the ERP security group."
   vpc_id      = aws_vpc.main.id
   ingress     = []
   egress      = []
@@ -180,18 +197,6 @@ resource "aws_security_group" "db" {
     ignore_changes = [ingress, egress]
   }
   tags = merge(local.common_tags, { Name = "${local.prefix}-sg-db", Purpose = "database" })
-}
-
-resource "aws_security_group" "vpn" {
-  name        = "${local.prefix}-sg-vpn"
-  description = "Peer WireGuard y salto SSH administrativo restringido."
-  vpc_id      = aws_vpc.main.id
-  ingress     = []
-  egress      = []
-  lifecycle {
-    ignore_changes = [ingress, egress]
-  }
-  tags = merge(local.common_tags, { Name = "${local.prefix}-sg-vpn", Purpose = "wireguard" })
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
@@ -231,40 +236,24 @@ resource "aws_vpc_security_group_ingress_rule" "web_from_alb" {
   to_port                      = 8080
 }
 
-resource "aws_vpc_security_group_ingress_rule" "web_from_azure_vpn" {
-  security_group_id = aws_security_group.web.id
-  description       = "Prueba de seguimiento desde la VM VPN Azure."
-  cidr_ipv4         = "${var.azure_vpn_private_ip}/32"
-  ip_protocol       = "tcp"
-  from_port         = 8080
-  to_port           = 8080
-}
-
 resource "aws_vpc_security_group_ingress_rule" "web_from_azure_vnet" {
+  for_each          = var.enable_intercloud_vpn ? { azure = var.azure_vpc_cidr } : {}
   security_group_id = aws_security_group.web.id
-  description       = "Azure VNet access through WireGuard tunnel."
-  cidr_ipv4         = var.azure_vpc_cidr
+  description       = "Acceso corporativo desde Azure mediante Site-to-Site VPN."
+  cidr_ipv4         = each.value
   ip_protocol       = "tcp"
   from_port         = 8080
   to_port           = 8080
 }
 
-resource "aws_vpc_security_group_ingress_rule" "web_from_azure_tunnel" {
+resource "aws_vpc_security_group_ingress_rule" "web_from_azure_p2s" {
+  for_each          = var.enable_intercloud_vpn ? { clients = var.azure_p2s_client_cidr } : {}
   security_group_id = aws_security_group.web.id
-  description       = "Azure WireGuard tunnel source for peer tests."
-  cidr_ipv4         = "172.30.50.2/32"
+  description       = "Acceso a ERP desde el pool P2S de usuarios Azure mediante IPsec."
+  cidr_ipv4         = each.value
   ip_protocol       = "tcp"
   from_port         = 8080
   to_port           = 8080
-}
-
-resource "aws_vpc_security_group_ingress_rule" "web_ssh_from_vpn" {
-  security_group_id            = aws_security_group.web.id
-  description                  = "Internal SSH only from AWS peer."
-  referenced_security_group_id = aws_security_group.vpn.id
-  ip_protocol                  = "tcp"
-  from_port                    = 22
-  to_port                      = 22
 }
 
 resource "aws_vpc_security_group_egress_rule" "web_to_db" {
@@ -313,176 +302,198 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_web" {
   to_port                      = 5432
 }
 
-resource "aws_vpc_security_group_ingress_rule" "db_ssh_from_vpn" {
-  security_group_id            = aws_security_group.db.id
-  description                  = "Internal SSH only from AWS peer."
-  referenced_security_group_id = aws_security_group.vpn.id
-  ip_protocol                  = "tcp"
-  from_port                    = 22
-  to_port                      = 22
+resource "aws_security_group" "bootstrap" {
+  name        = "${local.prefix}-sg-bootstrap"
+  description = "Acceso SSH temporal al bootstrap solo desde la IP administrativa autorizada."
+  vpc_id      = aws_vpc.main.id
+  ingress     = []
+  egress      = []
+  lifecycle { ignore_changes = [ingress, egress] }
+  tags = merge(local.common_tags, { Name = "${local.prefix}-sg-bootstrap", Purpose = "temporary-bootstrap" })
 }
 
-resource "aws_vpc_security_group_egress_rule" "db_dns_udp" {
-  security_group_id = aws_security_group.db.id
-  description       = "DNS resolution inside VPC."
-  cidr_ipv4         = var.aws_vpc_cidr
-  ip_protocol       = "udp"
-  from_port         = 53
-  to_port           = 53
-}
-
-resource "aws_vpc_security_group_egress_rule" "db_http_bootstrap" {
-  for_each          = toset(["80", "443"])
-  security_group_id = aws_security_group.db.id
-  description       = "Descarga de paquetes durante bootstrap temporal."
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "tcp"
-  from_port         = tonumber(each.value)
-  to_port           = tonumber(each.value)
-}
-
-resource "aws_vpc_security_group_ingress_rule" "vpn_ssh_admin" {
-  for_each = var.admin_public_cidr == "" ? {} : { admin = var.admin_public_cidr }
-
-  security_group_id = aws_security_group.vpn.id
-  description       = "SSH from administrative public IP /32."
+resource "aws_vpc_security_group_ingress_rule" "bootstrap_ssh_admin" {
+  for_each          = !var.bootstrap_instance_enabled || var.admin_public_cidr == "" ? {} : { admin = var.admin_public_cidr }
+  security_group_id = aws_security_group.bootstrap.id
+  description       = "SSH temporal desde la IP administrativa /32."
   cidr_ipv4         = each.value
   ip_protocol       = "tcp"
   from_port         = 22
   to_port           = 22
 }
 
-resource "aws_vpc_security_group_ingress_rule" "vpn_wireguard_from_azure" {
-  for_each = var.azure_peer_public_cidr == "" ? {} : { azure = var.azure_peer_public_cidr }
+resource "aws_ecr_repository" "erp" {
+  name                 = "${local.prefix}-erp"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true # Lab-only cleanup; production repositories should retain images.
 
-  security_group_id = aws_security_group.vpn.id
-  description       = "WireGuard desde el peer Azure /32."
-  cidr_ipv4         = each.value
-  ip_protocol       = "udp"
-  from_port         = 51820
-  to_port           = 51820
-}
-
-resource "aws_vpc_security_group_egress_rule" "vpn_to_vpc" {
-  security_group_id = aws_security_group.vpn.id
-  description       = "Forwarding hacia redes privadas AWS."
-  cidr_ipv4         = var.aws_vpc_cidr
-  ip_protocol       = "-1"
-}
-
-resource "aws_vpc_security_group_egress_rule" "vpn_wireguard_to_azure" {
-  for_each = var.azure_peer_public_cidr == "" ? {} : { azure = var.azure_peer_public_cidr }
-
-  security_group_id = aws_security_group.vpn.id
-  description       = "WireGuard hacia el peer Azure /32."
-  cidr_ipv4         = each.value
-  ip_protocol       = "udp"
-  from_port         = 51820
-  to_port           = 51820
-}
-
-resource "aws_vpc_security_group_egress_rule" "vpn_dns_udp" {
-  security_group_id = aws_security_group.vpn.id
-  description       = "DNS resolution inside VPC."
-  cidr_ipv4         = var.aws_vpc_cidr
-  ip_protocol       = "udp"
-  from_port         = 53
-  to_port           = 53
-}
-
-resource "aws_vpc_security_group_egress_rule" "vpn_http_bootstrap" {
-  for_each          = toset(["80", "443"])
-  security_group_id = aws_security_group.vpn.id
-  description       = "Descarga de WireGuard durante bootstrap."
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "tcp"
-  from_port         = tonumber(each.value)
-  to_port           = tonumber(each.value)
-}
-
-resource "aws_instance" "vpn" {
-  ami                         = data.aws_ami.ubuntu_2404.id
-  instance_type               = var.vpn_instance_type
-  subnet_id                   = aws_subnet.this["public-a"].id
-  private_ip                  = "10.10.1.10"
-  vpc_security_group_ids      = [aws_security_group.vpn.id]
-  associate_public_ip_address = true
-  source_dest_check           = false
-  key_name                    = local.key_name
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 2
+  image_scanning_configuration {
+    scan_on_push = true
   }
-  user_data = templatefile("${path.module}/../../../scripts/aws-vpn-cloud-init.sh.tftpl", {
-    azure_public_key = var.azure_wireguard_public_key
-    azure_public_ip  = split("/", var.azure_peer_public_cidr)[0]
-    ssh_public_key   = var.ssh_public_key
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = merge(local.common_tags, { Name = "${local.prefix}-erp", Purpose = "container-registry" })
+}
+
+resource "aws_ecr_lifecycle_policy" "erp" {
+  repository = aws_ecr_repository.erp.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep only the three newest lab releases."
+      selection = {
+        tagStatus     = "tagged"
+        tagPrefixList = ["img-"]
+        countType     = "imageCountMoreThan"
+        countNumber   = 3
+      }
+      action = { type = "expire" }
+    }]
   })
-  user_data_replace_on_change = true
-
-  root_block_device {
-    volume_size           = 16
-    volume_type           = "gp3"
-    encrypted             = true
-    delete_on_termination = true
-  }
-
-  tags = merge(local.common_tags, { Name = "${local.prefix}-vpn", Purpose = "wireguard" })
 }
 
-resource "aws_eip" "vpn" {
-  count  = var.create_vpn_eip ? 1 : 0
-  domain = "vpc"
-  tags   = merge(local.common_tags, { Name = "${local.prefix}-vpn-eip", Purpose = "wireguard" })
-}
+resource "aws_secretsmanager_secret" "erp_runtime" {
+  name                    = "${local.prefix}/erp/runtime"
+  description             = "Runtime environment for AndesLog ERP nodes; value is populated by scripts/lab.ps1."
+  recovery_window_in_days = 0 # Lab-only: allow explicit Destroy to remove the secret immediately.
+  tags                    = merge(local.common_tags, { Purpose = "erp-runtime-secret" })
 
-resource "aws_eip_association" "vpn" {
-  count         = var.create_vpn_eip ? 1 : 0
-  allocation_id = aws_eip.vpn[0].id
-  instance_id   = aws_instance.vpn.id
-}
-
-resource "aws_instance" "web" {
-  for_each = {
-    web-a = { subnet = "app-a", ip = "10.10.11.10" }
-    web-b = { subnet = "app-b", ip = "10.10.12.10" }
+  # The replica carries the same values, including the PRIMARY database URL.
+  # A regional application must explicitly select its own database endpoint.
+  dynamic "replica" {
+    for_each = var.enable_dr_runtime_secret_replication ? [var.aws_dr_region] : []
+    content {
+      region = replica.value
+    }
   }
 
-  ami                    = data.aws_ami.ubuntu_2404.id
-  instance_type          = var.web_instance_type
-  subnet_id              = aws_subnet.this[each.value.subnet].id
-  private_ip             = each.value.ip
-  vpc_security_group_ids = [aws_security_group.web.id]
-  key_name               = local.key_name
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 2
-  }
-  user_data = templatefile("${path.module}/../../../scripts/aws-web-cloud-init.sh.tftpl", {
-    erp_image = var.erp_image
-  })
-
-  # Bootstrap runs once on creation; version updates are rolled out by lab.ps1
-  # over SSH so a tag change never stops or replaces both web instances.
   lifecycle {
-    ignore_changes = [user_data]
+    precondition {
+      condition     = !var.enable_dr_runtime_secret_replication || var.aws_dr_region != var.aws_region
+      error_message = "El secreto de recuperación debe estar en otra región AWS."
+    }
+  }
+}
+
+data "aws_iam_instance_profile" "web_existing" {
+  count = var.web_instance_profile_name == "" ? 0 : 1
+  name  = var.web_instance_profile_name
+}
+
+resource "aws_iam_role" "web" {
+  count = var.web_instance_profile_name == "" ? 1 : 0
+  name  = "${local.prefix}-web-instance"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = merge(local.common_tags, { Purpose = "web-instance-role" })
+}
+
+resource "aws_iam_role_policy" "web_runtime" {
+  count = var.web_instance_profile_name == "" ? 1 : 0
+  name  = "${local.prefix}-web-runtime-read"
+  role  = aws_iam_role.web[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer"
+        ]
+        Resource = concat(
+          [aws_ecr_repository.erp.arn],
+          var.enable_aws_regional_dr ? [aws_ecr_repository.dr_erp[0].arn] : []
+        )
+      },
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = concat(
+          [aws_secretsmanager_secret.erp_runtime.arn],
+          var.enable_dr_runtime_secret_replication ? [replace(aws_secretsmanager_secret.erp_runtime.arn, ":${var.aws_region}:", ":${var.aws_dr_region}:")] : []
+        )
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "web" {
+  count = var.web_instance_profile_name == "" ? 1 : 0
+  name  = "${local.prefix}-web-instance"
+  role  = aws_iam_role.web[0].name
+  tags  = merge(local.common_tags, { Purpose = "web-instance-profile" })
+}
+
+resource "aws_launch_template" "web" {
+  name_prefix   = "${local.prefix}-web-"
+  image_id      = data.aws_ami.ubuntu_2404.id
+  instance_type = var.web_instance_type
+  key_name      = local.key_name
+
+  vpc_security_group_ids = [aws_security_group.web.id]
+
+  iam_instance_profile {
+    name = var.web_instance_profile_name != "" ? data.aws_iam_instance_profile.web_existing[0].name : aws_iam_instance_profile.web[0].name
   }
 
-  root_block_device {
-    volume_size           = 16
-    volume_type           = "gp3"
-    encrypted             = true
-    delete_on_termination = true
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
   }
 
-  tags = merge(local.common_tags, { Name = "${local.prefix}-${each.key}", Purpose = "web" })
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_size           = 16
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
 
-  # Ensure package installation in cloud-init starts only after the optional
-  # bootstrap NAT and private default routes exist.
+  user_data = base64encode(templatefile("${path.module}/../../../scripts/aws-web-cloud-init.sh.tftpl", {
+    aws_region                 = var.aws_region
+    ecr_registry               = split("/", aws_ecr_repository.erp.repository_url)[0]
+    erp_image                  = "${aws_ecr_repository.erp.repository_url}:${var.erp_image_tag}"
+    erp_runtime_secret_arn     = aws_secretsmanager_secret.erp_runtime.arn
+    enable_erp_integration     = var.enable_erp_integration
+    rds_ca_bundle_url          = "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem"
+    dump_script_b64            = base64encode(file("${path.module}/../../../scripts/dump-rds.sh"))
+    prepare_runtime_script_b64 = base64encode(file("${path.module}/../../../scripts/prepare-erp-runtime.py"))
+    database_host_override     = ""
+  }))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(local.common_tags, {
+      Name    = "${local.prefix}-web-asg"
+      Purpose = "web"
+    })
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags          = merge(local.common_tags, { Purpose = "web-root-volume" })
+  }
+
   depends_on = [
-    aws_route_table_association.private,
     aws_route.temporary_nat_egress,
     aws_vpc_security_group_egress_rule.web_dns_tcp,
     aws_vpc_security_group_egress_rule.web_dns_udp,
@@ -490,36 +501,104 @@ resource "aws_instance" "web" {
   ]
 }
 
-resource "aws_ebs_volume" "db_data" {
-  availability_zone = aws_subnet.this["data-a"].availability_zone
-  size              = 20
-  type              = "gp3"
-  encrypted         = true
-  tags              = merge(local.common_tags, { Name = "${local.prefix}-db-data", Purpose = "database" })
+resource "aws_autoscaling_group" "web" {
+  name                      = "${local.prefix}-web-asg"
+  min_size                  = var.web_min_size
+  desired_capacity          = var.web_desired_capacity
+  max_size                  = var.web_max_size
+  vpc_zone_identifier       = [for name in keys(local.app_subnets) : aws_subnet.this[name].id]
+  target_group_arns         = [aws_lb_target_group.web.arn]
+  health_check_type         = "ELB"
+  health_check_grace_period = 900
+  wait_for_capacity_timeout = "20m"
+  force_delete              = false
+  enabled_metrics = [
+    "GroupDesiredCapacity",
+    "GroupInServiceInstances",
+    "GroupMinSize",
+    "GroupMaxSize",
+    "GroupTotalInstances"
+  ]
+
+  launch_template {
+    id      = aws_launch_template.web.id
+    version = aws_launch_template.web.latest_version
+  }
+
+  dynamic "instance_refresh" {
+    for_each = var.enable_instance_refresh ? [1] : []
+    content {
+      strategy = "Rolling"
+      preferences {
+        min_healthy_percentage = 100
+        max_healthy_percentage = 150
+        instance_warmup        = 300
+        auto_rollback          = true
+      }
+    }
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${local.prefix}-web-asg"
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Project"
+    value               = "AndesLog"
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Environment"
+    value               = var.environment
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "ManagedBy"
+    value               = "Terraform"
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Owner"
+    value               = var.owner
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "CostCenter"
+    value               = "academic"
+    propagate_at_launch = true
+  }
 }
 
-resource "aws_instance" "db" {
-  ami                    = data.aws_ami.ubuntu_2404.id
-  instance_type          = var.db_instance_type
-  subnet_id              = aws_subnet.this["data-a"].id
-  private_ip             = var.db_private_ip
-  vpc_security_group_ids = [aws_security_group.db.id]
-  key_name               = local.key_name
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 2
+resource "aws_autoscaling_policy" "web_cpu" {
+  name                      = "${local.prefix}-web-cpu-target"
+  autoscaling_group_name    = aws_autoscaling_group.web.name
+  policy_type               = "TargetTrackingScaling"
+  estimated_instance_warmup = 300
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+    target_value = 60
   }
-  user_data = templatefile("${path.module}/../../../scripts/aws-db-cloud-init.sh.tftpl", {
-    db_private_ip = var.db_private_ip
-  })
-  user_data_replace_on_change = true
+}
 
-  # PostgreSQL's bootstrap is one-time initialization. Later script fixes must
-  # not replace the database instance or detach its persistent data volume.
-  lifecycle {
-    ignore_changes = [user_data]
+resource "aws_instance" "bootstrap" {
+  count                       = var.bootstrap_instance_enabled ? 1 : 0
+  ami                         = data.aws_ami.ubuntu_2404.id
+  instance_type               = var.web_instance_type
+  subnet_id                   = aws_subnet.this["public-a"].id
+  vpc_security_group_ids      = [aws_security_group.web.id, aws_security_group.bootstrap.id]
+  associate_public_ip_address = true
+  key_name                    = local.key_name
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
   }
+
+  user_data                   = file("${path.module}/../../../scripts/aws-bootstrap-cloud-init.sh.tftpl")
+  user_data_replace_on_change = true
 
   root_block_device {
     volume_size           = 16
@@ -528,34 +607,66 @@ resource "aws_instance" "db" {
     delete_on_termination = true
   }
 
-  tags = merge(local.common_tags, { Name = "${local.prefix}-db", Purpose = "database" })
+  tags = merge(local.common_tags, { Name = "${local.prefix}-bootstrap", Purpose = "temporary-database-bootstrap" })
 
   depends_on = [
-    aws_route_table_association.private,
     aws_route.temporary_nat_egress,
-    aws_vpc_security_group_egress_rule.db_dns_udp,
-    aws_vpc_security_group_egress_rule.db_http_bootstrap,
+    aws_vpc_security_group_egress_rule.web_dns_tcp,
+    aws_vpc_security_group_egress_rule.web_dns_udp,
+    aws_vpc_security_group_egress_rule.web_http_bootstrap,
   ]
 }
 
-resource "aws_volume_attachment" "db_data" {
-  device_name = "/dev/sdf"
-  volume_id   = aws_ebs_volume.db_data.id
-  instance_id = aws_instance.db.id
+resource "aws_db_subnet_group" "main" {
+  name        = "${local.prefix}-db-subnets"
+  subnet_ids  = [for name in keys(local.db_subnet_names) : aws_subnet.this[name].id]
+  description = "Subredes privadas en dos zonas para PostgreSQL Multi-AZ."
+  tags        = merge(local.common_tags, { Name = "${local.prefix}-db-subnets", Purpose = "database" })
 }
 
-resource "aws_route" "app_to_azure" {
-  for_each               = local.app_subnets
-  route_table_id         = aws_route_table.private[each.key].id
-  destination_cidr_block = "10.20.0.0/16"
-  network_interface_id   = aws_instance.vpn.primary_network_interface_id
-}
+resource "aws_db_instance" "main" {
+  identifier                      = "${local.prefix}-postgres"
+  engine                          = "postgres"
+  engine_version                  = data.aws_rds_orderable_db_instance.main.engine_version
+  instance_class                  = var.rds_instance_class
+  db_name                         = "andeslog"
+  username                        = "andeslog_master"
+  manage_master_user_password     = var.rds_external_master_secret_arn == "" ? true : null
+  password_wo                     = var.rds_external_master_secret_arn == "" ? null : var.rds_master_password
+  password_wo_version             = var.rds_external_master_secret_arn == "" ? null : 1
+  allocated_storage               = 20
+  max_allocated_storage           = 100
+  storage_type                    = "gp3"
+  storage_encrypted               = true
+  multi_az                        = true
+  publicly_accessible             = false
+  db_subnet_group_name            = aws_db_subnet_group.main.name
+  vpc_security_group_ids          = [aws_security_group.db.id]
+  backup_retention_period         = var.rds_backup_retention_days == null ? var.backup_retention_days : var.rds_backup_retention_days
+  auto_minor_version_upgrade      = true
+  copy_tags_to_snapshot           = true
+  deletion_protection             = var.rds_deletion_protection
+  skip_final_snapshot             = var.rds_skip_final_snapshot
+  final_snapshot_identifier       = var.rds_skip_final_snapshot ? null : var.rds_final_snapshot_identifier
+  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+  apply_immediately               = false
 
-resource "aws_route" "db_to_azure" {
-  for_each               = var.route_db_to_azure ? local.db_subnet_names : {}
-  route_table_id         = aws_route_table.private[each.key].id
-  destination_cidr_block = "10.20.0.0/16"
-  network_interface_id   = aws_instance.vpn.primary_network_interface_id
+  lifecycle {
+    precondition {
+      condition     = (var.rds_backup_retention_days == null ? var.backup_retention_days : var.rds_backup_retention_days) <= 35
+      error_message = "RDS admite hasta 35 días: define rds_backup_retention_days si la retención S3 es mayor."
+    }
+    precondition {
+      condition = (var.rds_external_master_secret_arn == "" && var.rds_external_rotation_lambda_arn == "") || (
+        var.rds_external_master_secret_arn != "" && var.rds_external_rotation_lambda_arn != "" &&
+        try(split(":", var.rds_external_master_secret_arn)[3] == var.aws_region && split(":", var.rds_external_master_secret_arn)[4] == data.aws_caller_identity.current.account_id, false) &&
+        try(split(":", var.rds_external_rotation_lambda_arn)[3] == var.aws_region && split(":", var.rds_external_rotation_lambda_arn)[4] == data.aws_caller_identity.current.account_id, false)
+      )
+      error_message = "El secreto externo y su Lambda de rotación deben estar ambos en la región y cuenta AWS primarias, o ambos deben quedar vacíos."
+    }
+  }
+
+  tags = merge(local.common_tags, { Name = "${local.prefix}-postgres", Purpose = "database" })
 }
 
 resource "aws_lb" "web" {
@@ -575,9 +686,11 @@ resource "aws_lb_target_group" "web" {
   vpc_id      = aws_vpc.main.id
 
   health_check {
-    enabled             = true
-    protocol            = "HTTP"
-    path                = "/api/health"
+    enabled  = true
+    protocol = "HTTP"
+    # Liveness controls instance replacement. Database readiness is monitored
+    # separately so a database outage does not make the ASG churn every web node.
+    path                = "/api/health/live"
     port                = "traffic-port"
     matcher             = "200"
     interval            = 30
@@ -587,13 +700,6 @@ resource "aws_lb_target_group" "web" {
   }
 
   tags = merge(local.common_tags, { Name = "${local.prefix}-web-targets", Purpose = "web" })
-}
-
-resource "aws_lb_target_group_attachment" "web" {
-  for_each         = aws_instance.web
-  target_group_arn = aws_lb_target_group.web.arn
-  target_id        = each.value.id
-  port             = 8080
 }
 
 resource "aws_lb_listener" "http" {
@@ -623,6 +729,17 @@ resource "aws_lb_listener" "https" {
   protocol          = "HTTPS"
   certificate_arn   = var.alb_certificate_arn
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
+  lifecycle {
+    precondition {
+      condition = try(
+        split(":", var.alb_certificate_arn)[3] == var.aws_region &&
+        split(":", var.alb_certificate_arn)[4] == data.aws_caller_identity.current.account_id,
+        false
+      )
+      error_message = "El listener HTTPS requiere un certificado ACM de la cuenta y región primarias."
+    }
+  }
 
   default_action {
     type             = "forward"
@@ -685,17 +802,24 @@ resource "aws_s3_bucket_versioning" "backups" {
   }
 }
 
-locals {
-  instance_ids = merge(
-    { for name, instance in aws_instance.web : name => instance.id },
-    { db = aws_instance.db.id, vpn = aws_instance.vpn.id }
-  )
+resource "aws_sns_topic" "alarm_email" {
+  count = var.notification_email == "" ? 0 : 1
+
+  name = "${local.prefix}-alarm-email"
+  tags = merge(local.common_tags, { Purpose = "alarm-notifications" })
 }
 
-resource "aws_cloudwatch_metric_alarm" "instance_cpu" {
-  for_each            = local.instance_ids
-  alarm_name          = "${local.prefix}-${each.key}-cpu-high"
-  alarm_description   = "CPU promedio mayor a 70% por cinco minutos en ${each.key}."
+resource "aws_sns_topic_subscription" "alarm_email" {
+  count = var.notification_email == "" ? 0 : 1
+
+  topic_arn = aws_sns_topic.alarm_email[0].arn
+  protocol  = "email"
+  endpoint  = var.notification_email
+}
+
+resource "aws_cloudwatch_metric_alarm" "web_asg_cpu" {
+  alarm_name          = "${local.prefix}-web-asg-cpu-high"
+  alarm_description   = "CPU promedio del Auto Scaling Group web superior a 70% durante cinco minutos."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "CPUUtilization"
@@ -704,7 +828,25 @@ resource "aws_cloudwatch_metric_alarm" "instance_cpu" {
   statistic           = "Average"
   threshold           = 70
   treat_missing_data  = "notBreaching"
-  dimensions          = { InstanceId = each.value }
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.web.name }
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "web_asg_in_service" {
+  alarm_name          = "${local.prefix}-web-asg-capacity-low"
+  alarm_description   = "Menos de dos nodos del ERP están en servicio."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "GroupInServiceInstances"
+  namespace           = "AWS/AutoScaling"
+  period              = 60
+  statistic           = "Minimum"
+  threshold           = 2
+  treat_missing_data  = "breaching"
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.web.name }
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_unhealthy" {
@@ -722,6 +864,60 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy" {
     LoadBalancer = aws_lb.web.arn_suffix
     TargetGroup  = aws_lb_target_group.web.arn_suffix
   }
+  alarm_actions = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions    = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
+  alarm_name          = "${local.prefix}-postgres-cpu-high"
+  alarm_description   = "CPU promedio de PostgreSQL superior a 70% durante cinco minutos."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 70
+  treat_missing_data  = "notBreaching"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.main.identifier }
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_free_storage" {
+  alarm_name          = "${local.prefix}-postgres-free-storage-low"
+  alarm_description   = "El almacenamiento libre de PostgreSQL es inferior a 5 GiB."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FreeStorageSpace"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Minimum"
+  threshold           = 5368709120
+  treat_missing_data  = "notBreaching"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.main.identifier }
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "vpn_tunnel_down" {
+  for_each            = local.vpn_tunnel_metrics
+  alarm_name          = "${local.prefix}-vpn-${each.key}-down"
+  alarm_description   = "Site-to-Site VPN tunnel ${each.key} is down."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "TunnelState"
+  namespace           = "AWS/VPN"
+  period              = 60
+  statistic           = "Minimum"
+  threshold           = 1
+  treat_missing_data  = "breaching"
+  dimensions = {
+    VpnId           = each.value.vpn_id
+    TunnelIpAddress = each.value.tunnel_address
+  }
+  alarm_actions = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions    = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
 }
 
 resource "aws_cloudwatch_dashboard" "main" {
@@ -737,10 +933,10 @@ resource "aws_cloudwatch_dashboard" "main" {
           stat   = "Average"
           period = 300
           metrics = concat(
-            [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.web["web-a"].id, { label = "web-a" }]],
-            [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.web["web-b"].id, { label = "web-b" }]],
-            [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.db.id, { label = "db" }]],
-            [["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.vpn.id, { label = "vpn" }]]
+            [["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", aws_autoscaling_group.web.name, { label = "web-asg-average" }]],
+            [["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", aws_autoscaling_group.web.name, { label = "web-in-service" }]],
+            [["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", aws_db_instance.main.identifier, { label = "postgres" }]],
+            [["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", aws_db_instance.main.identifier, { label = "postgres-connections" }]]
           )
         }
       },
