@@ -135,10 +135,10 @@ function ReadJson([string]$path) {
     return $hash
 }
 $savedAwsSettings = ReadJson $awsOverlay
-$script:wafPhase = if ($WafPhase) { $WafPhase } elseif ($savedAwsSettings.ContainsKey('waf_phase')) { [string]$savedAwsSettings['waf_phase'] } else { 'off' }
-$script:wafRateLimit = if ($WafRateLimit) { $WafRateLimit } elseif ($savedAwsSettings.ContainsKey('waf_rate_limit')) { [int]$savedAwsSettings['waf_rate_limit'] } else { 0 }
-$script:wafLogsVerified = $WafLogsVerified -or ($savedAwsSettings.ContainsKey('waf_logs_verified') -and $savedAwsSettings['waf_logs_verified'] -eq $true)
-$script:wafRulesReviewed = $WafRulesReviewed -or ($savedAwsSettings.ContainsKey('waf_rules_reviewed') -and $savedAwsSettings['waf_rules_reviewed'] -eq $true)
+$script:configuredWafPhase = if ($WafPhase) { $WafPhase } elseif ($savedAwsSettings.ContainsKey('waf_phase')) { [string]$savedAwsSettings['waf_phase'] } else { 'off' }
+$script:configuredWafRateLimit = if ($WafRateLimit) { $WafRateLimit } elseif ($savedAwsSettings.ContainsKey('waf_rate_limit')) { [int]$savedAwsSettings['waf_rate_limit'] } else { 0 }
+$script:configuredWafLogsVerified = $WafLogsVerified -or ($savedAwsSettings.ContainsKey('waf_logs_verified') -and $savedAwsSettings['waf_logs_verified'] -eq $true)
+$script:configuredWafRulesReviewed = $WafRulesReviewed -or ($savedAwsSettings.ContainsKey('waf_rules_reviewed') -and $savedAwsSettings['waf_rules_reviewed'] -eq $true)
 $script:rdsExternalSecretArn = if ($RdsExternalMasterSecretArn) { $RdsExternalMasterSecretArn } elseif ($savedAwsSettings.ContainsKey('rds_external_master_secret_arn')) { [string]$savedAwsSettings['rds_external_master_secret_arn'] } else { '' }
 $script:rdsRotationLambdaArn = if ($RdsExternalRotationLambdaArn) { $RdsExternalRotationLambdaArn } elseif ($savedAwsSettings.ContainsKey('rds_external_rotation_lambda_arn')) { [string]$savedAwsSettings['rds_external_rotation_lambda_arn'] } else { '' }
 $script:regionalDrRequested = $EnableAwsRegionalDr -or ($savedAwsSettings.ContainsKey('enable_aws_regional_dr') -and $savedAwsSettings['enable_aws_regional_dr'] -eq $true)
@@ -312,10 +312,10 @@ function UpdateOverlays([string[]]$azureGatewayIps, [bool]$nat, [bool]$enableAzu
     $aw['enable_erp_integration'] = $script:erpIntegrationRequested
     $aw['enable_temporary_nat'] = $nat
     $aw['rds_deletion_protection'] = $true
-    $aw['waf_phase'] = $script:wafPhase
-    $aw['waf_rate_limit'] = $script:wafRateLimit
-    $aw['waf_logs_verified'] = [bool]$script:wafLogsVerified
-    $aw['waf_rules_reviewed'] = [bool]$script:wafRulesReviewed
+    $aw['waf_phase'] = $script:configuredWafPhase
+    $aw['waf_rate_limit'] = $script:configuredWafRateLimit
+    $aw['waf_logs_verified'] = [bool]$script:configuredWafLogsVerified
+    $aw['waf_rules_reviewed'] = [bool]$script:configuredWafRulesReviewed
     SaveJson $awsOverlay $aw
 }
 function EnsureBackupProviders {
@@ -899,7 +899,7 @@ function Deploy {
     $existingDbEndpoint = TfOutput $awsRoot 'db_endpoint'
     Push-Location $awsRoot
     try { $existingAwsState = Capture 'terraform' @('state', 'list') } finally { Pop-Location }
-    Assert-AndeslogWaf $existingWafPhase $existingWafRate $existingAwsState $script:wafPhase $script:wafRateLimit ([bool]$script:wafLogsVerified) ([bool]$script:wafRulesReviewed)
+    Assert-AndeslogWaf $existingWafPhase $existingWafRate $existingAwsState $script:configuredWafPhase $script:configuredWafRateLimit ([bool]$script:configuredWafLogsVerified) ([bool]$script:configuredWafRulesReviewed)
     Assert-AndeslogNoManagedRegionalBackup $existingAwsState 'Deploy'
     if (-not $existingDbEndpoint -and @($existingAwsState -split "`r?`n") -contains 'aws_db_instance.main') {
         throw 'La base consta en el estado Terraform, pero no se pudo leer su endpoint; se detiene Deploy antes de modificar recursos.'
