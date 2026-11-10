@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\regional-dr-guard.ps1')
 
@@ -37,6 +37,11 @@ ExpectBlocked { Assert-AndeslogRegionalCompute 'true' '' $cert @{ enable_dr_erp_
 ExpectBlocked { Assert-AndeslogRegionalCompute '' 'standby.example' $cert @{ enable_dr_erp_compute = 'true'; dr_alb_certificate_arn = $cert } }
 Assert-AndeslogRegionalExperimentNotAutomated @{}
 Assert-AndeslogFilesCheckpoint 'false' @{}
+Assert-AndeslogFilesDrGateway '' @{}
+Assert-AndeslogFilesDrGateway 'gateway-dr' @{ enable_files_dr_gateway = $true }
+ExpectBlocked { Assert-AndeslogFilesDrGateway 'gateway-dr' @{} }
+ExpectBlocked { Assert-AndeslogFilesDrGateway 'gateway-dr' @{ enable_files_dr_gateway = 'true' } }
+ExpectBlocked { Assert-AndeslogFilesDrGateway 'gateway-dr' @{ enable_files_dr_gateway = $false } }
 Assert-AndeslogFilesCheckpoint 'true' @{ enable_files_dr_checkpoint = $true }
 ExpectBlocked { Assert-AndeslogFilesCheckpoint 'true' @{} }
 ExpectBlocked { Assert-AndeslogFilesCheckpoint 'true' @{ enable_files_dr_checkpoint = 'true' } }

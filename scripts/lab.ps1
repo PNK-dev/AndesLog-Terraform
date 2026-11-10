@@ -25,6 +25,7 @@ param(
     [switch]$EnableBackupAudit,
     [switch]$DisableErpIntegration,
     [switch]$EnableRemoteAccess,
+    [switch]$EnableFilesDrGateway,
     [switch]$SkipIntercloudVpn,
     [switch]$DisableInstanceRefresh,
     [switch]$ResumeUninitializedBootstrap
@@ -136,7 +137,8 @@ $script:erpIntegrationRequested = -not $DisableErpIntegration
 $script:erpIngestUrl = ''
 $script:erpIngestSecret = ''
 $script:erpIntegrationPublished = $false
-$script:remoteAccessRequested = $EnableRemoteAccess -or ([bool](ReadJson $azureOverlay)['enable_remote_access'])
+$script:filesDrGatewayRequested = $EnableFilesDrGateway -or ([bool](ReadJson $azureOverlay)['enable_files_dr_gateway'])
+$script:remoteAccessRequested = $EnableRemoteAccess -or $script:filesDrGatewayRequested -or ([bool](ReadJson $azureOverlay)['enable_remote_access'])
 $script:intercloudVpnEnabled = -not [bool]$SkipIntercloudVpn
 $script:instanceRefreshEnabled = -not [bool]$DisableInstanceRefresh
 $script:backupAuditPublished = $false
@@ -275,6 +277,7 @@ function UpdateOverlays([string[]]$azureGatewayIps, [bool]$nat, [bool]$enableAzu
     $az['enable_erp_integration'] = $script:erpIntegrationRequested
     $az['enable_remote_access'] = $script:remoteAccessRequested
     $az['enable_files_dr_replica'] = $script:remoteAccessRequested
+    $az['enable_files_dr_gateway'] = $script:filesDrGatewayRequested
     if ($AzureFilesDrLocation) { $az['azure_files_dr_location'] = $AzureFilesDrLocation.ToLowerInvariant() }
     $az['enable_intercloud_vpn'] = $script:intercloudVpnEnabled
     $az['enable_aws_vpn_connections'] = $enableAzureConnections
@@ -801,10 +804,10 @@ function NewAzureVpnVarsFile([string]$tunnelConfigJson) {
     [IO.File]::WriteAllText($path, $document, $utf8)
     return $path
 }
-function DownloadVpnClientProfile {
+function DownloadVpnClientProfile([string]$GatewayOutput = 'vpn_gateway_name', [string]$FileName = 'andeslog-azure-vpn-client.zip') {
     if (-not $script:remoteAccessRequested) { return }
     $resourceGroup = TfOutput $azureRoot 'resource_group_name'
-    $gatewayName = TfOutput $azureRoot 'vpn_gateway_name'
+    $gatewayName = TfOutput $azureRoot $GatewayOutput
     if (-not $resourceGroup -or -not $gatewayName) { throw 'Azure no devolvió el gateway necesario para el perfil VPN P2S.' }
     $raw = & az network vnet-gateway vpn-client generate --resource-group $resourceGroup --name $gatewayName --processor-architecture Amd64 --output json 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Azure no pudo generar el perfil de cliente P2S; revisa el estado del gateway y vuelve a ejecutar Deploy.' }
@@ -823,7 +826,7 @@ function DownloadVpnClientProfile {
     if (-not $url -or $url -notmatch '^https://') { throw 'Azure no devolvió el enlace de descarga del perfil P2S.' }
     $profileDirectory = Join-Path $repo '.lab-runtime\vpn'
     New-Item -ItemType Directory -Path $profileDirectory -Force | Out-Null
-    $zip = Join-Path $profileDirectory 'andeslog-azure-vpn-client.zip'
+    $zip = Join-Path $profileDirectory $FileName
     try { Invoke-WebRequest -Uri $url -OutFile $zip -TimeoutSec 90 -UseBasicParsing | Out-Null }
     catch { throw 'No se pudo descargar el perfil Azure VPN Client. Revisa conectividad y reintenta Deploy.' }
     Say "Perfil P2S guardado en $zip. Impórtalo en Azure VPN Client e inicia sesión con Microsoft Entra ID."
@@ -832,7 +835,17 @@ function Deploy {
     $existingCheckpoint = TfOutput $azureRoot 'files_dr_checkpoint_enabled'
     $existingEventArchiveDr = TfOutput $azureRoot 'erp_event_archive_replication_enabled'
     $existingIngressDr = TfOutput $azureRoot 'erp_failover_ingest_enabled'
+    $existingFilesDrGateway = TfOutput $azureRoot 'files_dr_gateway_name'
     $azureGuardOverlay = ReadJson $azureOverlay
+    if ($EnableFilesDrGateway) { $azureGuardOverlay['enable_files_dr_gateway'] = $true }
+    if (-not $existingFilesDrGateway) {
+        Push-Location $azureRoot
+        try { $azureState = Capture 'terraform' @('state', 'list') } finally { Pop-Location }
+        if (@($azureState -split "`r?`n") -contains 'azurerm_virtual_network_gateway.files_dr[0]') {
+            throw 'El gateway regional consta en el estado Azure pero no se pudo leer su nombre; se detiene Deploy antes de modificar recursos.'
+        }
+    }
+    Assert-AndeslogFilesDrGateway $existingFilesDrGateway $azureGuardOverlay
     Assert-AndeslogFilesCheckpoint $existingCheckpoint $azureGuardOverlay
     Assert-AndeslogEventArchiveReplication $existingEventArchiveDr $azureGuardOverlay
     Assert-AndeslogIngressDrNotAutomated $existingIngressDr $azureGuardOverlay
@@ -973,6 +986,9 @@ function Deploy {
     Say 'Fase 6/7: eliminando la VM bootstrap temporal; el ASG, RDS y gateways permanecen multi-AZ.'
     Tf $awsRoot @('apply', '-input=false', '-auto-approve', '-no-color')
     DownloadVpnClientProfile
+    if ($script:filesDrGatewayRequested) {
+        DownloadVpnClientProfile 'files_dr_gateway_name' 'andeslog-azure-files-dr-vpn-client.zip'
+    }
     foreach ($root in @($awsRoot, $azureRoot)) {
         Push-Location $root
         try {

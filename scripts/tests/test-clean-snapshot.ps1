@@ -44,8 +44,9 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw 'No se pudo inicializar el grafo local.' }
                 $graph = (& terraform graph -type=plan) -join "`n"
                 if ($LASTEXITCODE -ne 0 -or $graph -notmatch 'azurerm_virtual_network_peering\.files_dr_to_primary \(expand\)" -> "\[root\] azurerm_virtual_network_gateway\.main \(expand\)' -or
-                    $graph -notmatch 'azurerm_virtual_network_peering\.files_dr_to_primary \(expand\)" -> "\[root\] azurerm_virtual_network_peering\.primary_to_files_dr \(expand\)') {
-                    throw 'El peering DR no depende del gateway y peering primarios.'
+                    $graph -notmatch 'azurerm_virtual_network_peering\.files_dr_to_primary \(expand\)" -> "\[root\] azurerm_virtual_network_peering\.primary_to_files_dr \(expand\)' -or
+                    $graph -notmatch 'azurerm_virtual_network_gateway\.files_dr \(expand\)" -> "\[root\] azurerm_virtual_network_peering\.files_dr_to_primary \(expand\)') {
+                    throw 'Las dependencias de peering y gateway DR no están completas.'
                 }
             }
         } finally { Pop-Location }

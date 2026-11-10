@@ -219,5 +219,11 @@ resource "azurerm_virtual_network_gateway" "files_dr" {
 
   tags = merge(local.common_tags, { Purpose = "manual-files-regional-failover" })
 
-  depends_on = [azurerm_private_dns_resolver_inbound_endpoint.files_dr]
+  # A VNet using the primary's remote gateway cannot create its own gateway.
+  # Update the peering before creating this gateway and reverse the order when
+  # tearing it down. See Azure gateway transit restrictions.
+  depends_on = [
+    azurerm_private_dns_resolver_inbound_endpoint.files_dr,
+    azurerm_virtual_network_peering.files_dr_to_primary,
+  ]
 }

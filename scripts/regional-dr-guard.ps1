@@ -1,4 +1,11 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
+
+function Assert-AndeslogFilesDrGateway([string]$GatewayName, [hashtable]$Overlay) {
+    if ($GatewayName -and (-not $Overlay.ContainsKey('enable_files_dr_gateway') -or
+        $Overlay['enable_files_dr_gateway'] -isnot [bool] -or $Overlay['enable_files_dr_gateway'] -ne $true)) {
+        throw 'El estado Azure contiene la infraestructura VPN de recuperación de Files. Usa -EnableFilesDrGateway para conservarla; se detiene Deploy para evitar destruirla.'
+    }
+}
 
 function Assert-AndeslogFilesCheckpoint([string]$Enabled, [hashtable]$Overlay) {
     if ($Enabled -eq 'true' -and (-not $Overlay.ContainsKey('enable_files_dr_checkpoint') -or
