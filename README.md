@@ -10,7 +10,7 @@ Este repositorio define la infraestructura de AndesLog en AWS y Azure. AWS aloja
 
 [Detalles de componentes](docs/ARQUITECTURA_TERRAFORM.md) · [Diseño y pruebas de resiliencia](docs/RESILIENCIA.md) · [Presupuesto de referencia de producción](docs/PRESUPUESTO_PRODUCCION.md) · [Diagrama histórico de octubre](docs/ARQUITECTURA_DESPLEGADA.md)
 
-Para la asesoría, usa la [guía rápida de despliegue, demostración y baja](docs/GUIA_DEMOSTRACION.md).
+Para la asesoría, usa la [guía rápida de despliegue, demostración y baja](docs/GUIA_DEMOSTRACION.md) y la [evaluación punto por punto de la rúbrica](docs/EVALUACION_RUBRICA.md).
 
 | Componente | Diseño y estado del último despliegue |
 | --- | --- |

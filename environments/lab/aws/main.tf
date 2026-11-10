@@ -868,6 +868,64 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy" {
   ok_actions    = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
 }
 
+resource "aws_cloudwatch_metric_alarm" "alb_error_rate" {
+  alarm_name          = "${local.prefix}-alb-error-rate-high"
+  alarm_description   = "Más del 5% de respuestas HTTP observadas del ALB y targets son 5xx, en dos de tres minutos."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+
+  metric_query {
+    id          = "error_rate"
+    expression  = "IF(t2 + t3 + t4 + t5 + a3 + a4 + a5 > 0, 100 * (t5 + a5) / (t2 + t3 + t4 + t5 + a3 + a4 + a5), 0)"
+    label       = "Porcentaje de respuestas HTTP observadas 5xx"
+    return_data = true
+  }
+  dynamic "metric_query" {
+    for_each = {
+      t2 = "HTTPCode_Target_2XX_Count"
+      t3 = "HTTPCode_Target_3XX_Count"
+      t4 = "HTTPCode_Target_4XX_Count"
+      t5 = "HTTPCode_Target_5XX_Count"
+      a3 = "HTTPCode_ELB_3XX_Count"
+      a4 = "HTTPCode_ELB_4XX_Count"
+      a5 = "HTTPCode_ELB_5XX_Count"
+    }
+    content {
+      id          = metric_query.key
+      return_data = false
+      metric {
+        namespace   = "AWS/ApplicationELB"
+        metric_name = metric_query.value
+        period      = 60
+        stat        = "Sum"
+        dimensions  = { LoadBalancer = aws_lb.web.arn_suffix }
+      }
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_latency" {
+  alarm_name          = "${local.prefix}-alb-target-p95-high"
+  alarm_description   = "Tiempo p95 hasta cabeceras del target mayor de 2 segundos en dos de tres minutos."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  extended_statistic  = "p95"
+  threshold           = 2
+  treat_missing_data  = "notBreaching"
+  dimensions          = { LoadBalancer = aws_lb.web.arn_suffix, TargetGroup = aws_lb_target_group.web.arn_suffix }
+  alarm_actions       = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+  ok_actions          = var.notification_email == "" ? [] : [aws_sns_topic.alarm_email[0].arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   alarm_name          = "${local.prefix}-postgres-cpu-high"
   alarm_description   = "CPU promedio de PostgreSQL superior a 70% durante cinco minutos."

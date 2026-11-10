@@ -72,6 +72,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-erp-demo.ps1 
 
 Esta prueba crea un almacén, un producto y una entrada de inventario sintéticos en la base activa. Reenvía la misma operación para comprobar que no se duplique y muestra el identificador; comprueba el evento en Azure por separado. Necesita el archivo local de credenciales generado durante el despliegue. El 10 de noviembre de 2026 pasó en Docker local y en el ERP desplegado; además, Azure Application Insights confirmó el evento de inventario en Blob. La prueba de carga del mismo día completó 300 solicitudes de salud sin errores, con p95 de aproximadamente 264 ms. Son resultados de un ensayo acotado y deben repetirse si se necesitan capturas actuales.
 
+Para medir también consultas de negocio con sesiones autenticadas, usa Python 3.10 o posterior y sustituye la dirección por la que realmente corresponde al ERP:
+
+```powershell
+python .\scripts\load-test-business.py --url http://DNS-DEL-ALB --secret-file .\environments\lab\aws\andeslog.runtime.secret --users 3 --requests-per-user 12 --allow-http
+```
+
+El comando inicia hasta 10 sesiones de la misma cuenta y consulta dashboard, almacenes, inventario, pedidos, transporte y resumen. Se detiene ante fallos o latencias mayores del límite; no crea datos de negocio ni imprime contraseñas. El POST de autenticación envía credenciales: `--allow-http` acepta expresamente el riesgo del laboratorio y no debe usarse con datos reales. La alternativa segura requiere HTTPS con dominio y certificado. El ensayo se probó localmente con el ERP actual y SQLite: 36 consultas correctas con tres sesiones; no se ha probado en el ALB de esta versión y no certifica la capacidad para 100 o más usuarios.
+
+Terraform también configura alarmas de calidad del ALB: más de **5 % de respuestas HTTP observadas 5xx** y **p95 del tiempo del target superior a 2 segundos**, cada una en dos de tres periodos de un minuto. Usan el SNS existente si se define `TF_VAR_notification_email` y el destinatario confirma la suscripción. La primera cuenta las respuestas 2xx–5xx de targets y 3xx–5xx del ALB, no conexiones rechazadas ni otras respuestas; la segunda mide hasta las cabeceras del target, no la latencia completa del navegador. No hay alarma útil de latencia sin tráfico; p95 con pocas solicitudes es inestable. Su configuración pasó pruebas Terraform simuladas, pero todavía no se han desplegado ni comprobado sus correos. Ver [métricas del ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-cloudwatch-metrics.html).
+
 Para una prueba de recuperación de un nodo web en una ventana de práctica:
 
 ```powershell
