@@ -40,6 +40,8 @@ ssh -V
 
 Clona el ERP como proyecto hermano de este repositorio, por ejemplo `AndesLogProject\AndesLog-Terraform` y `AndesLogProject\ERP-APP`. Se necesita la cuenta HCP Terraform con permiso para usar los workspaces `andeslog-lab-aws` y `andeslog-lab-azure`.
 
+El script identifica la imagen ejecutable `linux/amd64` por su manifest para evitar una rotación cuando solo cambia la atestación de compilación. La inspección por plataforma requiere [API Docker 1.49 o posterior](https://docs.docker.com/reference/cli/docker/image/inspect/); en versiones anteriores se usa el identificador general y podría ocurrir una rotación adicional. La procedencia de la imagen sigue adjunta cuando Docker la genera; esta etiqueta no sustituye la verificación de firmas o de la cadena de suministro.
+
 ## Sesiones y credenciales temporales
 
 No guardes credenciales cloud en Git, `terraform.tfvars`, overlays o scripts. Las sesiones caducan; actualízalas desde sus portales oficiales antes de cada ventana de trabajo.

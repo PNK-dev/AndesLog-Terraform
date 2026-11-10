@@ -416,7 +416,17 @@ function BuildErp {
     Native 'docker' @('info', '--format', '{{.ServerVersion}}')
     Say 'Construyendo imagen ERP linux/amd64 antes de modificar la nube.'
     Native 'docker' @('build', '--platform', 'linux/amd64', '-t', $ErpImage, $ErpDirectory)
-    $imageId = Capture 'docker' @('image', 'inspect', '--format', '{{.Id}}', $ErpImage)
+    # BuildKit can attach a fresh provenance attestation on every build. The
+    # outer image-index digest may then change even when the runnable image is
+    # identical. Identify the linux/amd64 manifest to avoid needless rollouts.
+    try {
+        $imageId = Capture 'docker' @('image', 'inspect', '--platform', 'linux/amd64', '--format', '{{.Id}}', $ErpImage)
+    } catch {
+        # Older Docker Engine APIs do not support platform-specific inspect.
+        # Retain the previous behavior instead of blocking those clients.
+        Say 'Docker no admite inspección por plataforma; se usará el identificador general de la imagen.'
+        $imageId = Capture 'docker' @('image', 'inspect', '--format', '{{.Id}}', $ErpImage)
+    }
     if ($imageId -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Docker no devolvió el identificador SHA-256 esperado para la imagen ERP.' }
     $script:ecrTag = 'img-' + $imageId.Substring(7, 24)
     $script:archive = Join-Path $work 'andeslog-erp.tar'
@@ -986,6 +996,18 @@ function Deploy {
     if ($script:remoteAccessRequested) { Say 'VPN usuarios: Azure VPN Client con Microsoft Entra ID; archivos SMB usan su autenticación separada.' }
     Say "Credenciales iniciales ERP: archivo local $secretPath (nunca se imprime su contenido)."
 }
+function GetRdsForDestroy([string]$identifier) {
+    $raw = Capture 'aws' @('rds', 'describe-db-instances', '--query',
+        'DBInstances[*].{id:DBInstanceIdentifier,status:DBInstanceStatus,protection:DeletionProtection}',
+        '--output', 'json', '--no-cli-pager')
+    $instances = @($raw | ConvertFrom-Json | Where-Object { $null -ne $_ -and $_.id -ceq $identifier })
+    if ($instances.Count -gt 1) { throw 'AWS devolvió más de una base con el mismo identificador; se detiene la baja.' }
+    if ($instances.Count -eq 0) { return $null }
+    if ($instances[0].status -isnot [string] -or -not $instances[0].status -or $instances[0].protection -isnot [bool]) {
+        throw 'AWS devolvió un estado RDS incompleto; se detiene la baja.'
+    }
+    return $instances[0]
+}
 function DestroyLab {
     Push-Location $awsRoot
     try { $backupState = Capture 'terraform' @('state', 'list') } finally { Pop-Location }
@@ -1002,17 +1024,31 @@ function DestroyLab {
     }
     if ($dbIdentifier) {
         if ($dbIdentifier -notmatch '^[a-zA-Z][a-zA-Z0-9-]{0,62}$') { throw 'Identificador RDS inesperado; se detiene la baja.' }
-        Say 'Desactivando protección contra borrado únicamente en la instancia RDS del estado.'
-        Native 'aws' @('rds', 'modify-db-instance', '--db-instance-identifier', $dbIdentifier,
-                       '--no-deletion-protection', '--no-apply-immediately', '--query', 'DBInstance.DBInstanceIdentifier', '--output', 'text', '--no-cli-pager')
-        $unprotected = $false
-        for ($attempt = 1; $attempt -le 60; $attempt++) {
-            $protected = & aws rds describe-db-instances --db-instance-identifier $dbIdentifier --query 'DBInstances[0].DeletionProtection' --output text --no-cli-pager 2>$null
-            if ($LASTEXITCODE -ne 0) { throw 'No se pudo verificar la protección de RDS después del cambio.' }
-            if ("$protected" -eq 'False' -or "$protected" -eq 'false') { $unprotected = $true; break }
-            Start-Sleep -Seconds 5
+        $db = GetRdsForDestroy $dbIdentifier
+        if ($db -and $db.status -eq 'deleting') {
+            Say 'RDS ya estaba eliminándose; se espera su finalización antes de continuar.'
+            for ($attempt = 1; $attempt -le 60 -and $db; $attempt++) {
+                Start-Sleep -Seconds 15
+                $db = GetRdsForDestroy $dbIdentifier
+                if ($db -and $db.status -ne 'deleting') { throw 'RDS dejó de estar en eliminación; revisa su estado antes de continuar.' }
+            }
+            if ($db) { throw 'RDS sigue eliminándose; reintenta la baja cuando termine.' }
         }
-        if (-not $unprotected) { throw 'RDS todavía tiene protección de borrado; vuelve a comprobar antes de reintentar.' }
+        if (-not $db) {
+            Say 'RDS ya no existe en AWS; Terraform reconciliará el estado durante la baja.'
+        } elseif ($db.protection -eq $true) {
+            Say 'Desactivando protección contra borrado únicamente en la instancia RDS del estado.'
+            Native 'aws' @('rds', 'modify-db-instance', '--db-instance-identifier', $dbIdentifier,
+                           '--no-deletion-protection', '--no-apply-immediately', '--query', 'DBInstance.DBInstanceIdentifier', '--output', 'text', '--no-cli-pager')
+            $unprotected = $false
+            for ($attempt = 1; $attempt -le 60; $attempt++) {
+                $db = GetRdsForDestroy $dbIdentifier
+                if (-not $db) { throw 'RDS desapareció durante la verificación de protección; revisa su estado.' }
+                if ($db.protection -eq $false) { $unprotected = $true; break }
+                Start-Sleep -Seconds 5
+            }
+            if (-not $unprotected) { throw 'RDS todavía tiene protección de borrado; vuelve a comprobar antes de reintentar.' }
+        }
     }
     Say 'Destruyendo primero AWS: ASG, NAT, Site-to-Site VPN y PostgreSQL Multi-AZ.'
     Tf $awsRoot @('destroy', '-input=false', '-auto-approve', '-no-color')

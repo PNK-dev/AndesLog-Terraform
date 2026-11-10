@@ -28,7 +28,7 @@ locals {
   }
   db_subnet_names = { for name, cfg in local.subnet_definitions : name => cfg if startswith(name, "data-") }
   key_name = var.existing_key_name != "" ? var.existing_key_name : (
-    var.ssh_public_key != "" ? aws_key_pair.admin[0].key_name : null
+    var.ssh_public_key != "" ? try(aws_key_pair.admin[0].key_name, null) : null
   )
   bucket_name = "${replace(lower(var.project), "/[^a-z0-9-]/", "-")}-${var.environment}-${data.aws_caller_identity.current.account_id}-backups"
 }

@@ -4,7 +4,7 @@ $lab = Join-Path $PSScriptRoot '..\lab.ps1'
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($lab, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'No se pudo analizar lab.ps1.' }
-foreach ($name in @('CheckIdentity', 'StopWebAsg', 'DestroyLab')) {
+foreach ($name in @('CheckIdentity', 'StopWebAsg', 'GetRdsForDestroy', 'DestroyLab')) {
     $definition = $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (@($definition).Count -ne 1) { throw 'No se encontró exactamente una función esperada.' }
     Invoke-Expression $definition[0].Extent.Text
@@ -22,10 +22,18 @@ try {
     $savedOrg = $env:TF_CLOUD_ORGANIZATION; $env:TF_CLOUD_ORGANIZATION = 'AndesLog'
     $global:operations = New-Object System.Collections.ArrayList
     $global:failRds = $false
+    $global:rdsMode = 'protected'
     $global:azureState = @('azurerm_storage_share.corporate[0]', 'azurerm_storage_account.shared_files[0]', 'azurerm_resource_group.main')
     function Say([string]$Message) {}
     function Need([string]$Name) {}
     function Capture([string]$Exe, [string[]]$ArgsList) {
+        if ($Exe -eq 'aws' -and $ArgsList[0] -eq 'rds') {
+            if ($global:failRds) { throw 'Fallo simulado de RDS.' }
+            if ($global:rdsMode -eq 'missing') { return '[]' }
+            if ($global:rdsMode -eq 'deleting') { $global:rdsMode = 'missing'; return '[{"id":"andeslog-test-db","status":"deleting","protection":false}]' }
+            if ($global:rdsMode -eq 'protected') { return '[{"id":"andeslog-test-db","status":"available","protection":true}]' }
+            return '[{"id":"andeslog-test-db","status":"available","protection":false}]'
+        }
         if ($Exe -eq 'aws') { return $ExpectedAwsAccount }
         if ($Exe -eq 'az') { return $ExpectedAzureSubscription }
         if ($Exe -ne 'terraform' -or $ArgsList[0] -ne 'state' -or $ArgsList[1] -ne 'list') { throw 'Captura no esperada.' }
@@ -51,8 +59,10 @@ try {
     function Native($Exe, [string[]]$ArgsList) {
         [void]$global:operations.Add("$Exe`:$($ArgsList -join ' ')")
         if ($global:failRds -and $Exe -eq 'aws' -and $ArgsList[0] -eq 'rds') { throw 'Fallo simulado de RDS.' }
+        if ($Exe -eq 'aws' -and $ArgsList[0] -eq 'rds') { $global:rdsMode = 'unprotected' }
     }
     function terraform { $global:LASTEXITCODE = 0; return $global:azureState }
+    function Start-Sleep { }
     function aws {
         $global:LASTEXITCODE = 0
         if (($args -join ' ') -match 'AutoScalingGroups\[0\]\.AutoScalingGroupName') { return 'andeslog-test-asg' }
@@ -69,6 +79,16 @@ try {
     if ($joined.IndexOf('azurerm_storage_share.corporate[0]') -gt $joined.IndexOf('azurerm_storage_account.shared_files[0]') -or
         $joined.IndexOf('azurerm_storage_account.shared_files[0]') -gt $joined.IndexOf('azurerm_resource_group.main')) { throw 'Orden de conservación incorrecto.' }
     $global:operations.Clear()
+    $global:rdsMode = 'missing'
+    DestroyLab
+    $joined = $global:operations -join "`n"
+    if ($joined -match 'rds modify-db-instance' -or $joined -notmatch 'tf:destroy') { throw 'Una base ya eliminada debe permitir reanudar la baja sin modificar RDS.' }
+    $global:operations.Clear()
+    $global:rdsMode = 'deleting'
+    DestroyLab
+    $joined = $global:operations -join "`n"
+    if ($joined -match 'rds modify-db-instance' -or $joined -notmatch 'tf:destroy') { throw 'Una base en eliminación debe esperarse antes de reanudar la baja.' }
+    $global:operations.Clear()
     $global:failRds = $true
     $stopped = $false
     try { DestroyLab } catch { $stopped = $true }
@@ -78,5 +98,5 @@ try {
     $env:TF_CLOUD_ORGANIZATION = $savedOrg
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
     Remove-Item function:aws, function:terraform -ErrorAction SilentlyContinue
-    Remove-Variable operations, azureState, failRds -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable operations, azureState, failRds, rdsMode -Scope Global -ErrorAction SilentlyContinue
 }
