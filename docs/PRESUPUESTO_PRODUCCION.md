@@ -4,7 +4,7 @@
 
 Esta estimación se construye desde las necesidades de operación del ERP logístico B2B: atender tráfico aun si cae un nodo o una zona, conservar PostgreSQL durante un fallo zonal, mantener privados los datos y sostener la integración ERP→Azure. No se usa el crédito académico de USD 50 como límite de diseño ni para elegir capacidad.
 
-Con precios retail de referencia y 730 horas de operación mensual, el **escenario base Multi-AZ** cuesta aproximadamente **USD 1,086/mes** con Azure `VpnGw2AZ`, o **USD 845/mes** con el `VpnGw1AZ` que usa hoy Terraform. Incluye un ejemplo de ejecución del nuevo timer cada minuto y la concesión gratuita cuando corresponda. El cálculo contempla dos nodos web, ALB, RDS Multi-AZ, dos NAT, conectividad S2S objetivo, VPN de usuarios, DNS privado, una copia de Azure Files en Mexico Central, tres Private Endpoints y la integración serverless. Es un presupuesto parcial respecto de la meta final: no incluye todavía recuperación regional de la aplicación, base de datos ni Function/Blob, ni la protección web WAF. No presentar esta cifra como costo final de una solución sin puntos únicos de falla regionales.
+Con precios retail de referencia y 730 horas de operación mensual, el **escenario base Multi-AZ** cuesta aproximadamente **USD 1,094/mes** con Azure `VpnGw2AZ`, o **USD 853/mes** con el `VpnGw1AZ` que usa hoy Terraform. Incluye un ejemplo de ejecución del nuevo timer cada minuto y la concesión gratuita cuando corresponda. El cálculo contempla dos nodos web, ALB, RDS Multi-AZ, dos NAT, conectividad S2S objetivo, VPN de usuarios, DNS privado, una copia de Azure Files en Mexico Central, tres Private Endpoints y la integración serverless. Es un presupuesto parcial respecto de la meta final: no incluye todavía recuperación regional de la aplicación, base de datos ni Function/Blob, ni la protección web WAF. No presentar esta cifra como costo final de una solución sin puntos únicos de falla regionales.
 
 El escenario base usa tamaños candidatos de producción (`t3.large`, `db.t4g.medium` y `VpnGw2AZ`); los valores de laboratorio versionados son menores (`t3.micro`, `db.t3.micro` y `VpnGw1AZ`) para ajustarse a cuotas y ventanas de práctica. El mayor tamaño de producción debe confirmarse con pruebas representativas antes de comprar capacidad.
 
@@ -19,12 +19,12 @@ El presupuesto no garantiza que el ERP tenga capacidad suficiente. La prueba de 
 - Dos NAT Gateway y 100 GB procesados al mes; dos conexiones AWS Site-to-Site VPN hacia el gateway activo-activo de Azure (cuatro túneles en total).
 - Para la referencia de producción se usa `VpnGw2AZ` de generación 2, zona redundante y activo-activo, con benchmark de 1.25 Gbps. El Terraform actual usa `VpnGw1AZ`, también zonal/activo-activo, con benchmark de 650 Mbps; el precio se presenta como variante del código actual. La selección final debe seguir el throughput medido y la disponibilidad objetivo.
 - La integración ERP→Azure usa Azure Functions Flex Consumption, `512 MiB`, host storage ZRS y balanceo zonal. Se presupuestan dos instancias always-ready para sobrevivir a la falla de una zona. BackupAudit sería una Function adicional.
-- Un DNS Private Resolver inbound endpoint, tres Private Endpoints (Files primario, Files DR y Blob de eventos), 100 GB de Files primario Hot ZRS, 10 GB en la copia Files Hot ZRS y 100 GB cada uno en Blob de backups y de eventos.
+- Un DNS Private Resolver inbound endpoint, tres Private Endpoints (Files primario, Files DR y Blob de eventos), 100 GB de Files primario Hot ZRS, 100 GB en la copia Files Hot ZRS y 100 GB cada uno en Blob de backups y de eventos.
 - Las conexiones S2S y P2S se mantienen dentro del tramo incluido del gateway Azure: hasta 10 S2S y las primeras 128 P2S. No se suma el cargo por conexión de esos tramos.
 
-La meta acordada para producción es **RTO de hasta 30 minutos y RPO de hasta 5 minutos** para ERP, base de datos y archivos. Todavía no se han demostrado esos objetivos. El código local programa Files cada minuto, sin garantizar que una ejecución termine antes de la siguiente, y la aplicación/base no cuentan con recuperación regional implementada. El despliegue anterior, ya destruido, usaba 15 minutos. Este subtotal Multi-AZ es insuficiente para costear la solución que cumple la meta. Faltan por definir concurrencia máxima, transacciones por segundo, crecimiento de archivos y SLO de disponibilidad; la prueba de 300 GET a readiness no dimensiona producción.
+La meta acordada para producción es **RTO de hasta 30 minutos y RPO de hasta 5 minutos** para ERP, base de datos y archivos. Todavía no se han demostrado esos objetivos. El código local programa Files cada minuto, sin garantizar que una ejecución termine antes de la siguiente, y la aplicación/base no cuentan con recuperación regional implementada. Una prueba histórica usaba intervalos de 15 minutos. Este subtotal Multi-AZ es insuficiente para costear la solución que cumple la meta. Faltan por definir concurrencia máxima, transacciones por segundo, crecimiento de archivos y SLO de disponibilidad; la prueba de 300 GET a readiness no dimensiona producción.
 
-Los 100 GB del share primario son una hipótesis de consumo para producción; el share desplegado tiene actualmente una cuota Terraform de 10 GiB. Debe ajustarse la cuota y validarse el volumen real antes de trasladar esta fila a un presupuesto de compra.
+Los 100 GB por share son una hipótesis de consumo para producción; la cuota Terraform del laboratorio es de 10 GiB. La cuota de ambos shares debe superar el volumen previsto y tener margen para archivos temporales, elementos exclusivos del destino y crecimiento. Las cuotas no se cobran como espacio consumido en este modelo; deben confirmarse la modalidad y el volumen real antes de comprar.
 
 ## Estimación mensual
 
@@ -53,14 +53,14 @@ AWS cobra NAT tanto por hora como por datos procesados; el precio del ALB tambi�
 | IP públicas Standard | 3 × USD 0.01/h × 730 h | Direcciones zonales requeridas por las configuraciones del gateway P2S activo-activo. | 21.90 |
 | DNS Private Resolver inbound | 1 endpoint, referencia de USD 180/mes | Resolución privada de Files desde clientes conectados; servicio administrado con redundancia zonal. | 180.00 |
 | Azure Files Hot ZRS, Chile Central | 100 GB usados × USD 0.104998/GB-mes | Share corporativo primario con réplica síncrona dentro de la región; los cargos por transacción van aparte. | 10.50 |
-| Azure Files DR Hot ZRS, Mexico Central | 10 GB usados × USD 0.08/GB-mes | Copia regional independiente. La cifra modela datos usados, no la cuota de 10 GiB; sincronización, transacciones y transferencia se agregan por uso. | 0.80 |
+| Azure Files DR Hot ZRS, Mexico Central | 100 GB usados × USD 0.08/GB-mes | Copia regional con capacidad para los mismos datos que el origen; se necesita cuota adicional para temporales y crecimiento. Transacciones y transferencia se agregan por uso. | 8.00 |
 | Blob Hot ZRS: backup + eventos | 200 GB usados × USD 0.023/GB-mes | 100 GB por cada finalidad: respaldos y eventos de integración, redundantes entre zonas. Operaciones y egreso no incluidos. | 4.60 |
 | Private Endpoints (3) | 3 × USD 0.01/h × 730 h, tarifa minorista de referencia | Aísla los shares primario/secundario y el Blob de eventos de la red pública; datos procesados y transferencia se cobran aparte. | 21.90 |
 | Azure Functions Flex zonal ERP ingest | 2 × 0.5 GB × 730 h × 3,600 s × USD 0.000004/GB-s; no incluye ejecuciones | Dos instancias always-ready para tolerar la falla de una zona y evitar esperar un cold start en el flujo de eventos. | 10.51 |
 | Timer de sincronización Azure Files | 43,800 ejecuciones/mes; ejemplo de 30 s × 0.5 GB = 657,000 GB-s. Con 100,000 GB-s gratuitos disponibles, 557,000 × USD 0.000026. | Reutiliza la Function Flex existente; supone que cada ejecución acaba en 30 s. Los cargos de operaciones y tráfico se añaden aparte. | **14.48 aprox.; variable** |
-| **Subtotal Azure** |  |  | **658 aprox.** |
+| **Subtotal Azure** |  |  | **666 aprox.** |
 
-La API Retail de Azure consultada el 2026-11-06 devuelve USD 0.54/h para `VpnGw2AZ` en Chile Central, USD 0.21/h para `VpnGw1AZ`, USD 0.104998/GB-mes para Azure Files Standard ZRS en Chile Central, USD 0.08/GB-mes en Mexico Central y USD 0.023/GB-mes para Blob Hot ZRS en West US 2. El DNS Private Resolver inbound se modela con la tarifa publicada de USD 180 por endpoint/mes. Azure VPN Gateway cobra por SKU y transferencia; su tarifa de cómputo activa-activa es igual a activa-pasiva. Las cantidades de Files y Blob son consumo almacenado; operaciones, transferencias y salida no están incluidas. La primera copia registrada transfirió 8 archivos; la capacidad presupuestada de 10 GB es una hipótesis, no una medición del uso actual.
+La API Retail de Azure consultada el 2026-11-06 devuelve USD 0.54/h para `VpnGw2AZ` en Chile Central, USD 0.21/h para `VpnGw1AZ`, USD 0.104998/GB-mes para Azure Files Standard ZRS en Chile Central, USD 0.08/GB-mes en Mexico Central y USD 0.023/GB-mes para Blob Hot ZRS en West US 2. El DNS Private Resolver inbound se modela con la tarifa publicada de USD 180 por endpoint/mes. Azure VPN Gateway cobra por SKU y transferencia; su tarifa de cómputo activa-activa es igual a activa-pasiva. Las cantidades de Files y Blob son consumo almacenado; operaciones, transferencias y salida no están incluidas. La primera copia registrada transfirió 8 archivos; la capacidad presupuestada de 100 GB por copia es una hipótesis, no una medición del uso actual.
 
 La fila de Functions aproxima el baseline de dos instancias always-ready; el timer se calcula separadamente con 43,800 invocaciones por mes de 730 horas y un supuesto no validado de 30 segundos cada una. La API Retail devolvió USD 0.000026 por GB-s bajo demanda en West US 2 el 2026-11-10, después de la concesión. El ejemplo supone que la suscripción es elegible y tiene disponible toda la concesión de 100,000 GB-s y 250,000 ejecuciones; sin esa concesión, los 657,000 GB-s costarían USD 17.08 y 43,800 ejecuciones USD 0.0175 adicionales. Los demás usos de la suscripción pueden agotarla antes. Se agregan cargos por operaciones, tráfico, logs, regla de alerta evaluada cada minuto y host storage según volumen real. La Function BackupAudit opcional añade otro plan Flex. Valida los precios contractuales en la calculadora Azure.
 
@@ -70,8 +70,8 @@ La versión local calcula un hash leyendo todos los archivos de la copia secunda
 
 | Escenario | USD/mes aprox. | Qué significa |
 | --- | ---: | --- |
-| Multi-AZ con Azure `VpnGw2AZ` Gen2 e ingestión ERP zonal | **1,086** | Incluye S2S objetivo, Function ERP ingest, tres Private Endpoints, Files DR de 10 GB y Blob. |
-| Mismo diseño con `VpnGw1AZ` actual | **845** | Conserva redundancia zonal y Files DR; menor throughput de referencia que `VpnGw2AZ`. |
+| Multi-AZ con Azure `VpnGw2AZ` Gen2 e ingestión ERP zonal | **1,094** | Incluye S2S objetivo, Function ERP ingest, tres Private Endpoints, Files DR de 100 GB y Blob. |
+| Mismo diseño con `VpnGw1AZ` actual | **853** | Conserva redundancia zonal y Files DR; menor throughput de referencia que `VpnGw2AZ`. |
 | Function BackupAudit opcional | **+11** | Baseline aproximado de un plan Flex adicional; host storage y ejecuciones aparte. |
 | Con tercer nodo ERP en forma continua | **+61** | Cada `t3.large` adicional suma aproximadamente USD 60.96/mes más disco. |
 | Sin conexiones Site-to-Site AWS | **−73** | No existiría el flujo privado AWS↔Azure, por lo que no cumpliría el diseño intercloud. |
@@ -96,7 +96,7 @@ La preparación desactivada de la Function secundaria añade un Private Endpoint
 
 La sonda de replicación PostgreSQL está probada solo en local y no tiene todavía un ejecutor. Terraform prepara de forma opcional una conexión privada entre las VPC regionales para supervisión, pero no se ha desplegado ni probado. Para presupuestar supervisión continua se deben añadir el costo del ejecutor, la transferencia entre regiones por el peering, las escrituras y lecturas de los marcadores, la retención y las métricas/alertas. El costo dependerá de la frecuencia y no está incluido en el subtotal actual. Consulta [precios de VPC Peering](https://aws.amazon.com/vpc/pricing/).
 
-Sobre el subtotal anterior de USD 1,086/mes, se agregan los siguientes importes indicativos. Son hipótesis de precios bajo demanda con 730 horas mensuales; para la segunda región AWS se reutilizan las tarifas de referencia de la región primaria y deben cotizarse en la región de recuperación elegida.
+Sobre el subtotal anterior de USD 1,094/mes, se agregan los siguientes importes indicativos. Son hipótesis de precios bajo demanda con 730 horas mensuales; para la segunda región AWS se reutilizan las tarifas de referencia de la región primaria y deben cotizarse en la región de recuperación elegida.
 
 | Incremento previsto | Cálculo de referencia | USD/mes aprox. |
 | --- | --- | ---: |
@@ -109,9 +109,8 @@ Sobre el subtotal anterior de USD 1,086/mes, se agregan los siguientes importes 
 | Gateway `VpnGw2AZ`, IP y resolver en Mexico Central | USD 0.54/h × 730 h + tres IP Standard a USD 0.01/h + resolver estimado en USD 180/mes | 596.10 |
 | Segunda Function zonal | Dos instancias always-ready de 512 MiB; baseline, sin ejecuciones ni host storage | 10.51 |
 | Azure Front Door Premium | Tarifa base mensual; solicitudes y transferencia aparte | 330.00 |
-| Igualar la copia de Files a 100 GB | 90 GB adicionales × USD 0.08/GB-mes en Mexico Central; el subtotal base ya incluye 10 GB | 7.20 |
-| **Incremento aproximado** | | **1,556** |
-| **Subtotal multirregional aproximado** | USD 1,086 + USD 1,556 | **2,642/mes** |
+| **Incremento aproximado** | | **1,549** |
+| **Subtotal multirregional aproximado** | USD 1,094 + USD 1,549 | **2,643/mes** |
 
 Este subtotal es una base para cotización, no una garantía de capacidad o de RTO/RPO. La réplica RDS es asíncrona y requiere promoción y recuperación probadas; el código local de Azure Files tampoco ha demostrado el objetivo de cinco minutos ni una restauración consistente. La estimación **no incluye** almacenamiento de imágenes ECR en la segunda región, transferencia para publicar esas imágenes, transferencia interregional o entre nubes, operaciones y almacenamiento extra de backups, host storage y otras ejecuciones de Functions, almacenamiento Blob secundario, logs y retención, automatización de failover, licencias, soporte ni personal. Tampoco incluye los costos de las pruebas y restauraciones. Esos rubros deben medirse y añadirse antes de aprobar el presupuesto final.
 
@@ -126,7 +125,7 @@ La siguiente lista se refiere al **subtotal Multi-AZ base**, no al subtotal mult
 - Recuperación regional completa del ERP: otro ALB, mínimo dos nodos de aplicación, NAT/egreso, direcciones públicas y distribución global/DNS. El costo depende de modo activo-activo o warm standby y no está en este subtotal.
 - Recuperación regional de PostgreSQL: réplica cross-region o diseño de base distribuida, almacenamiento, transferencia, backups y ejercicios de promoción. Hay que elegir mecanismo tras fijar el RPO (incluida la pérdida aceptable de escrituras) y el RTO; no está en este subtotal.
 - Recuperación regional de Function y Blob de eventos: segunda Function/plan, almacenamiento, rutas y política de failover. El outbox evita perder los eventos en AWS durante una interrupción, pero el servicio regional secundario y la recuperación del consumidor aún no están presupuestados.
-- Gateway P2S y DNS Private Resolver de Mexico Central para acceso de usuarios durante failover de Azure Files. Se crean solo bajo demanda; ambos añaden cargos por hora mientras estén activos. El costo de activación no está incluido en los subtotales anteriores.
+- Gateway P2S y DNS Private Resolver de Mexico Central para acceso de usuarios durante failover de Azure Files. Pueden prepararse con `-EnableFilesDrGateway` o crearse bajo demanda; ambos generan cargos mientras estén activos. No están incluidos en el subtotal base; el escenario multirregional sí reserva una estimación para mantenerlos encendidos.
 - AWS WAF, reglas administradas y solicitudes, más dominio/DNS público. El listener de laboratorio es HTTP; TLS del ALB requiere certificado ACM y dominio validado, y WAF no está desplegado ni incluido en el subtotal.
 - Autenticación individual sin Shared Key para Azure Files, protección DDoS avanzada, SIEM y retención extensa de logs.
 - Transferencia de salida a Internet, tráfico entre nubes, tráfico de Azure Files/Blob, operaciones de almacenamiento, restauraciones, snapshots que superen el almacenamiento gratuito de backups RDS, ampliación del disco y autoscaling por encima de dos nodos.
@@ -142,7 +141,7 @@ Los USD 50 corresponden a la capacidad real de la cuenta académica para ensayos
 Precios minoristas consultados el **2026-11-06**. Reproduce y ajusta el cálculo en las calculadoras oficiales antes de aprobar presupuesto:
 
 1. En AWS Pricing Calculator selecciona `us-east-1`, dos EC2 `t3.large`, RDS PostgreSQL Multi-AZ `db.t4g.medium`, ALB, dos NAT Gateway, dos Site-to-Site VPN connections, volúmenes EBS/RDS, ocho IPv4 como supuesto y servicios CloudWatch/ECR/Secrets Manager.
-2. En Azure Pricing Calculator selecciona `Chile Central`, `Mexico Central` y `West US 2`; agrega `VpnGw2AZ`, tres IP Standard principales, un DNS Private Resolver inbound, tres Private Endpoints, 100 GB de Azure Files primario Hot ZRS, 10 GB de copia en Mexico Central y 100 GB de cada Blob Hot ZRS. El gateway/resolver de DR se debe cotizar aparte si permanecerá encendido. Introduce las conexiones simultáneas y volumen de datos real.
+2. En Azure Pricing Calculator selecciona `Chile Central`, `Mexico Central` y `West US 2`; agrega `VpnGw2AZ`, tres IP Standard principales, un DNS Private Resolver inbound, tres Private Endpoints, 100 GB de Azure Files primario Hot ZRS, 100 GB de copia en Mexico Central y 100 GB de cada Blob Hot ZRS. El gateway/resolver de DR se debe cotizar aparte si permanecerá encendido. Introduce las conexiones simultáneas y volumen de datos real.
 3. Revisa Azure Cost Analysis y AWS Cost Explorer después de una prueba; las tarifas retail no reflejan necesariamente las condiciones de cuentas académicas.
 
 ## Fuentes oficiales
