@@ -104,3 +104,32 @@ function Assert-AndeslogRegionalExperimentNotAutomated([hashtable]$Overlay) {
         throw 'El despliegue automatizado de componentes regionales experimentales sigue en pruebas. Se detiene para evitar destruirla o iniciar instancias antes de sincronizar imagen y secreto.'
     }
 }
+
+function Assert-AndeslogWaf([string]$Current, [string]$CurrentRate, [string]$StateList, [string]$Requested, [int]$Rate, [bool]$LogsVerified, [bool]$RulesReviewed) {
+    $levels = @{ off = 0; logging = 1; count = 2; enforce = 3 }
+    if (-not $Current) {
+        if ($StateList -match '(?m)^module\.(primary_waf|secondary_waf)\[0\]\.aws_wafv2_web_acl\.waf\s*$') {
+            throw 'El estado contiene un WAF pero no se pudo leer su fase; se detiene Deploy.'
+        }
+        $Current = 'off'
+    }
+    if (-not $levels.ContainsKey($Current) -or -not $levels.ContainsKey($Requested)) { throw 'Fase WAF inválida.' }
+    if ($Current -eq 'off' -and $StateList -match '(?m)^module\.(primary_waf|secondary_waf)\[0\]\.aws_wafv2_web_acl\.waf\s*$') {
+        throw 'El estado contiene un WAF aunque su salida indica off; se detiene Deploy para evitar eliminarlo.'
+    }
+    if ($levels[$Requested] -lt $levels[$Current]) {
+        throw 'Este clon no conserva la fase WAF del estado; se detiene Deploy para evitar reducir o eliminar la protección.'
+    }
+    if ($levels[$Requested] -gt ($levels[$Current] + 1)) {
+        throw 'Avanza WAF por fases: logging, count y enforce; primero verifica cada etapa.'
+    }
+    if ($levels[$Requested] -ge 2 -and ($Rate -lt 10 -or -not $LogsVerified)) {
+        throw 'Para count o enforce indica -WafRateLimit y confirma -WafLogsVerified tras verificar los logs.'
+    }
+    if ($Current -in @('count', 'enforce') -and ([string]$Rate -ne $CurrentRate)) {
+        throw 'El límite WAF no coincide con el estado existente; se detiene Deploy para evitar cambiarlo accidentalmente.'
+    }
+    if ($Requested -eq 'enforce' -and -not $RulesReviewed) {
+        throw 'Antes de bloquear, revisa coincidencias y falsos positivos y usa -WafRulesReviewed.'
+    }
+}
