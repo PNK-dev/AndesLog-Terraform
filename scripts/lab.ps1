@@ -110,8 +110,16 @@ function Tf([string]$root, [string[]]$arguments) {
 function TfOutput([string]$root, [string]$name) {
     Push-Location $root
     try {
-        $result = & terraform output -raw $name 2>$null
-        if ($LASTEXITCODE -ne 0) { return '' }
+        # An absent output is normal after a partial destroy. Windows
+        # PowerShell 5 otherwise turns Terraform's stderr into a terminating
+        # NativeCommandError before the exit code can be handled.
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $result = & terraform output -raw $name 2>$null
+            $exitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousPreference }
+        if ($exitCode -ne 0) { return '' }
         return ($result | Out-String).Trim()
     } finally { Pop-Location }
 }
