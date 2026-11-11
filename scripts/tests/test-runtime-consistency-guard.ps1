@@ -30,6 +30,9 @@ function Expect-Rejection([string]$Json) {
 try {
     $json = $values | ConvertTo-Json -Compress
     Write-TestRuntime $values
+    Protect-AndeslogRuntimeSecret $path
+    $protectedAcl = Get-Acl -LiteralPath $path
+    if (-not $protectedAcl.AreAccessRulesProtected -or @($protectedAcl.Access | Where-Object { $_.IsInherited }).Count) { throw 'El archivo ERP existente heredó permisos.' }
     Assert-AndeslogRuntimeConsistency $path $json
     foreach ($key in @('APP_ENV', 'SECRET_KEY', 'DATABASE_URL', 'BOOTSTRAP_ADMIN_USERNAME', 'BOOTSTRAP_ADMIN_PASSWORD', 'ERP_AZURE_INGEST_URL', 'ERP_AZURE_INGEST_HMAC_SECRET')) {
         $altered = [ordered]@{}
@@ -82,6 +85,7 @@ try {
     Remove-Item -LiteralPath $path -Force
     Expect-Rejection $json
     Restore-AndeslogRuntimeSecret $path $json
+    Protect-AndeslogRuntimeSecret $path
     Assert-AndeslogRuntimeConsistency $path $json
     $acl = Get-Acl -LiteralPath $path
     if (-not $acl.AreAccessRulesProtected -or @($acl.Access | Where-Object { $_.IsInherited }).Count) { throw 'El secreto restaurado heredó permisos.' }

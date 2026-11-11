@@ -1,6 +1,26 @@
 #requires -Version 5.1
 Set-StrictMode -Version Latest
 
+function Protect-AndeslogRuntimeSecret([string]$Path) {
+    $phase = 'lectura'
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'invalid' }
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $phase = 'preparación de ACL'
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) { $null = $acl.RemoveAccessRuleSpecific($existingRule) }
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')))
+        $phase = 'aplicación de ACL'
+        if ($PSVersionTable.PSEdition -eq 'Core') {
+            [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+        } else {
+            $item.SetAccessControl($acl)
+        }
+    } catch { throw "No se pudo proteger el archivo local del ERP ($phase, $($_.Exception.GetType().Name)); se detiene el proceso." }
+}
+
 function Assert-AndeslogRuntimeConsistency([string]$Path, [string]$RemoteJson) {
     # Never include file content, JSON or parsing exceptions in errors.
     $errorMessage = 'El secreto local ERP no coincide con el secreto activo de AWS o está incompleto. Se detiene Deploy antes de modificar recursos; recupera y verifica el secreto correcto mediante un procedimiento seguro.'
@@ -85,7 +105,12 @@ function Restore-AndeslogRuntimeSecret([string]$Path, [string]$RemoteJson) {
         $acl.SetAccessRuleProtection($true, $false)
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
         $acl.AddAccessRule($rule)
-        $stream = New-Object IO.FileStream($Path, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+        if ($PSVersionTable.PSEdition -eq 'Core') {
+            $file = New-Object IO.FileInfo($Path)
+            $stream = [System.IO.FileSystemAclExtensions]::Create($file, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+        } else {
+            $stream = New-Object IO.FileStream($Path, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+        }
         $created = $true
         $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($lines -join "`n") + "`n")
         $stream.Write($bytes, 0, $bytes.Length)

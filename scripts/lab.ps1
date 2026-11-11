@@ -74,6 +74,24 @@ $script:webInstanceProfileName = $WebInstanceProfileName
 $script:awsTunnelConfigJson = ''
 
 function Say([string]$message) { Write-Host "[AndesLog] $message" }
+function NewPrivateWorkDirectory([string]$path) {
+    # The directory can briefly inherit permissions while empty; protect it
+    # before placing bootstrap or RDS credentials inside it.
+    New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+    try {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+        $acl.SetOwner($sid)
+        $acl.SetAccessRuleProtection($true, $false)
+        $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+        Set-Acl -LiteralPath $path -AclObject $acl
+    } catch {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        throw 'No se pudo proteger el directorio temporal de secretos; se detiene el proceso.'
+    }
+}
 function Need([string]$name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { throw "Falta $name en PATH." }
 }
@@ -430,7 +448,12 @@ function PrepareSecrets([string]$dbHost) {
     $secretKeys = @('APP_ENV', 'SECRET_KEY', 'DATABASE_URL', 'BOOTSTRAP_ADMIN_USERNAME', 'BOOTSTRAP_ADMIN_PASSWORD')
     if ($script:erpIntegrationRequested) { $secretKeys += @('ERP_AZURE_INGEST_URL', 'ERP_AZURE_INGEST_HMAC_SECRET', 'OUTBOX_POLL_SECONDS') }
     $lines = $secretKeys | ForEach-Object { "$_=$($vars[$_])" }
-    [IO.File]::WriteAllText($secretPath, (($lines -join "`n") + "`n"), $utf8)
+    if (Test-Path -LiteralPath $secretPath) {
+        Protect-AndeslogRuntimeSecret $secretPath
+        [IO.File]::WriteAllText($secretPath, (($lines -join "`n") + "`n"), $utf8)
+    } else {
+        Restore-AndeslogRuntimeSecret $secretPath ($vars | ConvertTo-Json -Compress)
+    }
     return $dbPassword
 }
 function BuildErp {
@@ -523,28 +546,40 @@ function BootstrapRds([string]$dbEndpoint, [string]$masterSecretArn, [string]$db
     $masterFile = Join-Path $work 'rds-master.json'
     $appFile = Join-Path $work 'erp-db-user.json'
     $bootstrapFile = Join-Path $repo 'scripts\bootstrap-rds.py'
+    $migrationEnvFile = Join-Path $repo 'scripts\prepare-rds-migration-env.py'
+    $remoteWork = '/home/ubuntu/.andeslog-bootstrap-' + [guid]::NewGuid().ToString('N')
+    $remoteCreated = $false
     [IO.File]::WriteAllText($masterFile, $masterSecretJson, $utf8)
     [IO.File]::WriteAllText($appFile, (@{ username = 'andeslog_app'; password = $dbPassword } | ConvertTo-Json -Compress), $utf8)
     $primaryError = $null
     try {
-        Upload $masterFile 'aws-bootstrap' '/home/ubuntu/.rds-master.json'
-        Upload $appFile 'aws-bootstrap' '/home/ubuntu/.erp-db-user.json'
-        Upload $bootstrapFile 'aws-bootstrap' '/home/ubuntu/.bootstrap-rds.py'
-        Remote 'aws-bootstrap' "chmod 600 /home/ubuntu/.rds-master.json /home/ubuntu/.erp-db-user.json && sudo docker run --rm --network host -e DB_HOST=$dbEndpoint -e DB_PORT=5432 -e RDS_MASTER_SECRET_FILE=/run/secrets/rds-master.json -e ERP_DB_SECRET_FILE=/run/secrets/erp-db-user.json -v /home/ubuntu/.rds-master.json:/run/secrets/rds-master.json:ro -v /home/ubuntu/.erp-db-user.json:/run/secrets/erp-db-user.json:ro -v /home/ubuntu/.bootstrap-rds.py:/run/bootstrap-rds.py:ro -v /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro $ErpImage python /run/bootstrap-rds.py"
+        Remote 'aws-bootstrap' "umask 077 && mkdir -m 700 $remoteWork"
+        $remoteCreated = $true
+        Upload $masterFile 'aws-bootstrap' "$remoteWork/rds-master.json"
+        Upload $appFile 'aws-bootstrap' "$remoteWork/erp-db-user.json"
+        Upload $bootstrapFile 'aws-bootstrap' "$remoteWork/bootstrap-rds.py"
+        Upload $migrationEnvFile 'aws-bootstrap' "$remoteWork/prepare-rds-migration-env.py"
+        $bootstrapCommand = "sudo docker run --rm --network host -e DB_HOST=$dbEndpoint -e DB_PORT=5432 -e RDS_MASTER_SECRET_FILE=/run/secrets/rds-master.json -e ERP_DB_SECRET_FILE=/run/secrets/erp-db-user.json -v ${remoteWork}/rds-master.json:/run/secrets/rds-master.json:ro -v ${remoteWork}/erp-db-user.json:/run/secrets/erp-db-user.json:ro -v ${remoteWork}/bootstrap-rds.py:/run/bootstrap-rds.py:ro -v /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro $ErpImage python /run/bootstrap-rds.py"
+        Remote 'aws-bootstrap' "chmod 600 $remoteWork/rds-master.json $remoteWork/erp-db-user.json && $bootstrapCommand prepare"
+        Remote 'aws-bootstrap' "sudo python3 $remoteWork/prepare-rds-migration-env.py --master $remoteWork/rds-master.json --runtime /etc/andeslog-app/erp.env --output $remoteWork/migration.env --host $dbEndpoint"
+        Remote 'aws-bootstrap' "sudo docker run --rm --env-file $remoteWork/migration.env -v /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro $ErpImage flask --app app:create_app db upgrade"
+        Remote 'aws-bootstrap' "$bootstrapCommand finalize"
     } catch {
         $primaryError = $_
         throw
     } finally {
         try {
-            $cleanupSucceeded = $false
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-                try {
-                    Remote 'aws-bootstrap' 'rm -f /home/ubuntu/.rds-master.json /home/ubuntu/.erp-db-user.json /home/ubuntu/.bootstrap-rds.py'
-                    $cleanupSucceeded = $true
-                    break
-                } catch {
-                    if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
-                    elseif (-not $primaryError) { throw }
+            $cleanupSucceeded = -not $remoteCreated
+            if ($remoteCreated) {
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try {
+                        Remote 'aws-bootstrap' "sudo rm -f $remoteWork/rds-master.json $remoteWork/erp-db-user.json $remoteWork/bootstrap-rds.py $remoteWork/prepare-rds-migration-env.py $remoteWork/migration.env && rmdir $remoteWork"
+                        $cleanupSucceeded = $true
+                        break
+                    } catch {
+                        if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
+                        elseif (-not $primaryError) { throw }
+                    }
                 }
             }
             if (-not $cleanupSucceeded -and $primaryError) {
@@ -773,7 +808,6 @@ function InstallErp([string]$dbPassword, [string]$dbEndpoint, [string]$masterSec
     Upload $secretPath 'aws-bootstrap' '/home/ubuntu/.andeslog-erp.env'
     Remote 'aws-bootstrap' 'chmod 600 /home/ubuntu/.andeslog-erp.env && sudo install -d -o root -g root -m 0750 /etc/andeslog-app && sudo install -o root -g root -m 0600 /home/ubuntu/.andeslog-erp.env /etc/andeslog-app/erp.env && rm -f /home/ubuntu/.andeslog-erp.env'
     BootstrapRds $dbEndpoint $masterSecretArn $dbPassword
-    Remote 'aws-bootstrap' "sudo docker run --rm --env-file /etc/andeslog-app/erp.env -v /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro $ErpImage flask --app app:create_app db upgrade"
     Remote 'aws-bootstrap' "sudo docker run --rm --env-file /etc/andeslog-app/erp.env -v /etc/ssl/certs/aws-rds-global-bundle.pem:/etc/ssl/certs/aws-rds-global-bundle.pem:ro $ErpImage flask --app app:create_app seed-admin"
     PublishRuntimeSecret $runtimeSecretArn
 }
@@ -1137,7 +1171,7 @@ try {
     if ($Action -eq 'Recreate' -and $script:rdsExternalSecretArn) {
         throw 'Recreate con secreto maestro externo no está habilitado hasta probar la actualización de host y la rotación; usa un procedimiento de recuperación validado.'
     }
-    if (-not (Test-Path $work)) { New-Item -ItemType Directory -Path $work -Force | Out-Null }
+    NewPrivateWorkDirectory $work
     CheckIdentity
     InitRoots
     switch ($Action) {
